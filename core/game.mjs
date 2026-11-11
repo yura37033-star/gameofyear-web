@@ -379,7 +379,7 @@ function fallbackStart(cols, rows, palette) {
   return pieces;
 }
 
-export function createGame({ cols = 10, rows = 16, seed = 1, palette = DEFAULT_PALETTE } = {}) {
+export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE } = {}) {
   if (!Number.isInteger(cols) || cols < 4 || !Number.isInteger(rows) || rows < 4) {
     throw new RangeError('cols and rows must be integers of at least 4');
   }

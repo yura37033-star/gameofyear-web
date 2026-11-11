@@ -186,7 +186,7 @@ function finishPlayback() {
 function startGame() {
   actionEpoch++; cancelTween(); cancelDrag(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
   hintDirection = 'clockwise';
-  state = createGame({ cols: 10, rows: 16, seed: seed() });
+  state = createGame({ cols: 10, rows: 20, seed: seed() });
   scene = state.pieces; displayedRow = state.nextRow; displayedScore = state.score;
   board.classList.remove('dragging'); frame.classList.remove('resolve', 'invalid'); $('gain').classList.remove('show');
   message('Торкнись фігури, щоб обрати.'); resize();
