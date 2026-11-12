@@ -1,5 +1,6 @@
 import { HINT_SCORE_LIMIT, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction } from './core/game.mjs';
 import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs';
+import { BUILD_ID, createJournal, finishGameLog, formatAll, formatReport, latestGame, parseDevice, recordTurn, startGameLog } from './journal.mjs';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -19,6 +20,27 @@ let successfulActions = 0, rotated = false, selectHintShown = false;
 const ROTATE_IDLE_HINT = 'Торкнись фігури: зі світлою рамкою її можна й повернути.';
 const ROTATE_SELECT_HINT = 'Фігури зі світлою рамкою можна повернути кнопками Вліво / Вправо.';
 const rotationPreviews = new Map();
+// --- Journal (DEMO_PLAN 18): in memory only, outside the core; every call is wrapped so it cannot break the game.
+const journal = createJournal();
+let journalReadyAt = 0, journalHints = 0, journalLastHint = null;
+function journalSafe(action) { try { return action(); } catch { return null; } }
+function journalTime(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+function journalRecord(before, result) {
+  const first = result.events[0], hint = journalLastHint, rotateAction = first.type === 'rotate';
+  const followed = Boolean(hint) && hint.pieceId === first.pieceId && (rotateAction
+    ? hint.kind === 'rotate' && hint.direction === first.direction
+    : hint.kind === 'move' && hint.offset.x === first.lastValidOffset?.x && hint.offset.y === first.lastValidOffset?.y);
+  recordTurn(journal, {
+    before, after: result.state, result, kind: rotateAction ? 'rotate' : 'move',
+    pathLength: first.path?.length ?? 0, pieceLength: before.pieces.find((item) => item.id === first.pieceId)?.cells.length ?? 0,
+    direction: first.direction ?? null, ms: performance.now() - journalReadyAt, hintsPressed: journalHints, followedHint: followed,
+  });
+  journalHints = 0; journalLastHint = null;
+  if (result.state.status === 'gameover') finishGameLog(journal, result.state, { endedAt: Date.now() });
+}
 
 function seed() {
   if (globalThis.crypto?.getRandomValues) return crypto.getRandomValues(new Uint32Array(1))[0];
@@ -227,6 +249,7 @@ function suggestionTick() {
 function requestHint() {
   if (busy || drag || state.status !== 'playing' || !hintVisible) return;
   const found = suggestAction(state);
+  journalHints++; journalLastHint = found && { kind: found.kind, pieceId: found.pieceId, direction: found.direction, offset: found.offset }; // journal
   clearSuggestion();
   if (!found) { message('Підказка недоступна: шлях не знайдено.', '', true); render(); return; }
   suggestion = found; selectedId = found.pieceId;
@@ -271,14 +294,21 @@ function completedMessage(gained = 0, doubled = false) {
 }
 function finishPlayback() {
   actionEpoch++; cancelTween(); activePhase = null; rotationTween = null; busy = false;
-  scene = state.pieces; displayedScore = state.score;
+  scene = state.pieces; displayedScore = state.score; journalReadyAt = performance.now();
   showNextRow(); refreshRotationPreviews();
   frame.classList.remove('resolve'); completedMessage(); render();
 }
 function startGame() {
   actionEpoch++; cancelTween(); cancelDrag(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
   hintDirection = 'clockwise'; successfulActions = 0; rotated = false; selectHintShown = false;
-  state = createGame({ cols: 8, rows: 12, seed: seed(), trial: true });
+  const gameSeed = seed();
+  state = createGame({ cols: 8, rows: 12, seed: gameSeed, trial: true });
+  journalSafe(() => {
+    const now = new Date();
+    journalHints = 0; journalLastHint = null; journalReadyAt = performance.now();
+    startGameLog(journal, { seed: gameSeed, mode: `trial ${state.cols}x${state.rows}`, startedAt: now.getTime(), startedLabel: journalTime(now), device: parseDevice(navigator.userAgent), build: BUILD_ID });
+    resetCopyUi();
+  });
   scene = state.pieces; displayedScore = state.score;
   showNextRow(); refreshRotationPreviews();
   board.classList.remove('dragging'); frame.classList.remove('resolve', 'invalid'); $('gain').classList.remove('show');
@@ -290,6 +320,7 @@ async function commit(result, initialScene = scene) {
   if (!result.changed) { invalidFeedback('Шлях зайнятий. Спробуй обійти перешкоду.'); render(); return; }
   const epoch = ++actionEpoch, oldScore = state.score;
   successfulActions++; clearSuggestion();
+  journalSafe(() => journalRecord(state, result)); // journal: successful actions only
   state = result.state; selectedId = null; busy = true; scene = initialScene;
   message('Фігури займають свої місця…'); render();
   const hasDouble = result.events.some((event) => event.type === 'double');
@@ -321,7 +352,7 @@ async function commit(result, initialScene = scene) {
       $('gain').textContent = `+${phase.rows.length * 100}`; $('gain').classList.remove('show'); void $('gain').offsetWidth; $('gain').classList.add('show');
     }
   }
-  scene = state.pieces; displayedScore = state.score;
+  scene = state.pieces; displayedScore = state.score; journalReadyAt = performance.now();
   showNextRow(); refreshRotationPreviews();
   activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled); render();
 }
@@ -394,7 +425,7 @@ function cancelDrag() {
 board.addEventListener('pointercancel', (event) => { if (drag?.pointerId === event.pointerId) cancelDrag(); });
 board.addEventListener('lostpointercapture', (event) => { if (drag?.pointerId === event.pointerId) cancelDrag(); });
 window.addEventListener('blur', cancelDrag);
-document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelDrag(); if (busy) finishPlayback(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) journalReadyAt = performance.now(); if (document.hidden) { cancelDrag(); if (busy) finishPlayback(); } });
 board.addEventListener('keydown', (event) => {
   if (!selectedId || busy || drag || state.status !== 'playing') return;
   if (event.key.toLowerCase() === 'r') { event.preventDefault(); rotate(event.shiftKey ? 'counterclockwise' : 'clockwise'); return; }
@@ -408,8 +439,44 @@ for (const [direction, button] of Object.entries(rotationButtons)) {
   button.addEventListener('click', () => rotate(direction));
 }
 hintButton.addEventListener('click', requestHint);
+// --- Copy results (DEMO_PLAN 18): clipboard write inside the click handler; read-only textarea as the fallback.
+const copyUis = {
+  result: { button: $('copyResultButton'), status: $('copyResultStatus'), area: $('copyResultText'), label: 'Скопіювати результати', build: () => { const game = latestGame(journal); return game ? formatReport(game) : ''; } },
+  all: { button: $('copyJournalButton'), status: $('copyJournalStatus'), area: $('copyJournalText'), label: 'Скопіювати журнал партій', build: () => formatAll(journal) },
+};
+const copyTimers = new Map();
+let copyEpoch = 0;
+function resetCopyUi() {
+  copyEpoch++;
+  for (const ui of Object.values(copyUis)) {
+    clearTimeout(copyTimers.get(ui)); ui.button.textContent = ui.label; ui.status.textContent = ''; ui.area.hidden = true; ui.area.value = '';
+  }
+}
+function copyDone(ui, ok, text) {
+  if (ok) {
+    ui.area.hidden = true; ui.area.value = '';
+    ui.status.textContent = 'Результати скопійовано.'; ui.button.textContent = 'Скопійовано';
+    clearTimeout(copyTimers.get(ui)); copyTimers.set(ui, setTimeout(() => { ui.button.textContent = ui.label; }, 2000));
+  } else {
+    clearTimeout(copyTimers.get(ui)); ui.button.textContent = ui.label;
+    ui.status.textContent = 'Скопіюйте вручну.'; ui.area.hidden = false; ui.area.value = text;
+    ui.area.focus({ preventScroll: true }); ui.area.select(); ui.area.setSelectionRange(0, text.length);
+  }
+}
+for (const ui of Object.values(copyUis)) {
+  ui.button.addEventListener('click', () => {
+    const epoch = copyEpoch;
+    let text = '';
+    try { text = ui.build(); } catch { ui.status.textContent = 'Журнал недоступний.'; return; }
+    let pending;
+    try { pending = navigator.clipboard.writeText(text); } catch { copyDone(ui, false, text); return; }
+    // A slow clipboard answer must not touch the UI of a game that has been restarted meanwhile.
+    Promise.resolve(pending).then(() => { if (epoch === copyEpoch) copyDone(ui, true, text); }, () => { if (epoch === copyEpoch) copyDone(ui, false, text); });
+  });
+}
 $('newGameButton').addEventListener('click', startGame); $('retryButton').addEventListener('click', startGame);
 $('helpButton').addEventListener('click', () => $('helpDialog').showModal());
+$('helpDialog').addEventListener('close', () => { journalReadyAt = performance.now(); }); // thinking time excludes reading the help
 $('closeHelp').addEventListener('click', () => $('helpDialog').close()); $('playButton').addEventListener('click', () => $('helpDialog').close());
 $('helpDialog').addEventListener('click', (e) => { if (e.target === $('helpDialog')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close(); } });
 new ResizeObserver(resize).observe(playArea);
