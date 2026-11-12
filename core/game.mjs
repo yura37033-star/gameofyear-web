@@ -264,10 +264,10 @@ function settle(pieces, rows, events) {
     const occupied = occupiedByOthers(current, null);
     const movingIds = new Set();
     for (const piece of current) {
-      const own = new Set(piece.cells.map((cell) => `${cell.x},${cell.y}`));
       const canFall = piece.cells.every((cell) => {
         const below = `${cell.x},${cell.y + 1}`;
-        return cell.y + 1 < rows && (!occupied.has(below) || own.has(below));
+        const belowOwner = occupied.get(below);
+        return cell.y + 1 < rows && (belowOwner === undefined || belowOwner === piece.id);
       });
       if (canFall) movingIds.add(piece.id);
     }
@@ -437,18 +437,30 @@ function topOccupied(pieces) {
   return pieces.some((piece) => piece.cells.some((cell) => cell.y === 0));
 }
 
-function actionSignature(type, pieceId, direction, cells) {
+function actionSignature(type, pieceId, direction, cells, path = null) {
   return {
     type,
     pieceId,
     ...(type === 'rotate' ? { direction } : {}),
+    ...(type === 'move' && path ? { path: path.map(cloneOffset) } : {}),
     cells: cells.map(cloneCell).sort((a, b) => a.y - b.y || a.x - b.x),
   };
 }
 
 function signaturesMatch(first, second) {
   return Boolean(first && second && first.type === second.type && first.pieceId === second.pieceId
-    && first.direction === second.direction && JSON.stringify(first.cells) === JSON.stringify(second.cells));
+    && first.direction === second.direction && sameCells(first.cells, second.cells));
+}
+
+function sameCells(first, second) {
+  if (!Array.isArray(first) || !Array.isArray(second) || first.length !== second.length) return false;
+  const sorted = (cells) => cells.map(cloneCell).sort((a, b) => a.y - b.y || a.x - b.x);
+  return JSON.stringify(sorted(first)) === JSON.stringify(sorted(second));
+}
+
+function nextWitnessStep(witness, matchesFirst) {
+  if (!matchesFirst || witness?.steps !== 2 || !witness.second) return null;
+  return { first: witness.second, steps: 1 };
 }
 
 function buildRescueRow(cols, palette, gapMask, random, incomingTurn, score, baseColor) {
@@ -528,31 +540,47 @@ function makePlacementPotential(state, piece) {
 function legalTrialActions(state, budget, maxActions = 48) {
   const candidates = [];
   const directions = [{ x: 0, y: -1 }, { x: -1, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }];
-  for (const piece of state.pieces) {
+  const owners = new Uint32Array(state.cols * state.rows);
+  for (let pieceIndex = 0; pieceIndex < state.pieces.length; pieceIndex += 1) {
+    for (const cell of state.pieces[pieceIndex].cells) owners[cell.y * state.cols + cell.x] = pieceIndex + 1;
+  }
+  const offsetWidth = state.cols * 2 + 1;
+  const offsetKey = (x, y) => (y + state.rows) * offsetWidth + x + state.cols;
+  const reconstructPath = (nodes, nodeIndex) => {
+    const path = [];
+    for (let index = nodeIndex; index >= 0; index = nodes[index].parent) {
+      path.push({ x: nodes[index].x, y: nodes[index].y });
+    }
+    path.reverse();
+    return path;
+  };
+
+  for (let pieceIndex = 0; pieceIndex < state.pieces.length; pieceIndex += 1) {
+    const piece = state.pieces[pieceIndex];
     const potential = makePlacementPotential(state, piece);
-    const occupied = new Set(state.pieces.filter((other) => other.id !== piece.id)
-      .flatMap((other) => other.cells.map((cell) => `${cell.x},${cell.y}`)));
     const validOffset = ({ x, y }) => piece.cells.every((cell) => {
       const targetX = cell.x + x, targetY = cell.y + y;
       return targetX >= 0 && targetX < state.cols && targetY >= 0 && targetY < state.rows
-        && !occupied.has(`${targetX},${targetY}`);
+        && (owners[targetY * state.cols + targetX] === 0 || owners[targetY * state.cols + targetX] === pieceIndex + 1);
     });
-    const queue = [{ offset: { x: 0, y: 0 }, path: [{ x: 0, y: 0 }] }];
-    const seen = new Set(['0,0']);
-    for (let cursor = 0; cursor < queue.length; cursor += 1) {
-      const entry = queue[cursor];
+    const nodes = [{ x: 0, y: 0, parent: -1 }];
+    const seen = new Set([offsetKey(0, 0)]);
+    for (let cursor = 0; cursor < nodes.length; cursor += 1) {
+      const entry = nodes[cursor];
       for (const direction of directions) {
-        const offset = { x: entry.offset.x + direction.x, y: entry.offset.y + direction.y };
-        const key = `${offset.x},${offset.y}`;
+        const x = entry.x + direction.x;
+        const y = entry.y + direction.y;
+        const key = offsetKey(x, y);
         if (seen.has(key)) continue;
         seen.add(key);
         budget.searchStates += 1;
         if (budget.searchStates > budget.searchLimit) { budget.exhausted = true; break; }
+        const offset = { x, y };
         if (!validOffset(offset)) continue;
-        const path = [...entry.path, offset];
-        queue.push({ offset, path });
-        const cells = piece.cells.map((cell) => ({ x: cell.x + offset.x, y: cell.y + offset.y }));
-        candidates.push({ type: 'move', pieceId: piece.id, path, offset, cells, potential: potential(cells) });
+        const nodeIndex = nodes.length;
+        nodes.push({ x, y, parent: cursor });
+        const cells = piece.cells.map((cell) => ({ x: cell.x + x, y: cell.y + y }));
+        candidates.push({ type: 'move', pieceId: piece.id, nodeIndex, nodes, offset, cells, potential: potential(cells) });
       }
       if (budget.exhausted) break;
     }
@@ -578,33 +606,60 @@ function legalTrialActions(state, budget, maxActions = 48) {
     if (candidate.type === 'rotate') { actions.push(candidate); continue; }
     budget.previewChecks += 1;
     if (budget.previewChecks > budget.previewLimit) { budget.exhausted = true; break; }
-    const preview = previewMovePath(state, candidate.pieceId, candidate.path);
+    const path = reconstructPath(candidate.nodes, candidate.nodeIndex);
+    const preview = previewMovePath(state, candidate.pieceId, path);
     if (!preview.valid || preview.lastValidOffset.x !== candidate.offset.x || preview.lastValidOffset.y !== candidate.offset.y) continue;
-    actions.push({ ...candidate, preview });
+    actions.push({ ...candidate, path, preview });
     if (actions.length >= maxActions) break;
   }
   return actions;
 }
 
-function simulateTrialAction(state, action) {
+function simulateTrialAction(state, action, { prepareNext = false, refreshHeldWitness = false } = {}) {
   const event = action.type === 'rotate'
     ? { type: 'rotate', pieceId: action.pieceId, direction: action.direction }
     : { type: 'move', pieceId: action.pieceId, path: action.preview.acceptedPath, lastValidOffset: action.preview.lastValidOffset };
-  return finalizeMove(state, action.pieceId, action.preview, event, { recordEvents: false, prepareNext: false });
+  return finalizeMove(state, action.pieceId, action.preview, event, {
+    recordEvents: false,
+    prepareNext,
+    refreshHeldWitness,
+  });
 }
 
-function findTrialWitness(state, budget, firstActions) {
+function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates = false, maxFirstStates = 6 } = {}) {
   const startingScore = state.score;
   const candidates = [];
+  const seenFirstStates = deduplicateFirstStates ? new Set() : null;
   for (const action of firstActions) {
     if (budget.transitions >= budget.transitionLimit) { budget.exhausted = true; break; }
     budget.transitions += 1;
     const result = simulateTrialAction(state, action);
     if (result.state.status !== 'playing') continue;
-    const first = actionSignature(action.type, action.pieceId, action.direction, action.preview.cells);
+    const first = actionSignature(action.type, action.pieceId, action.direction, action.preview.cells, action.preview.acceptedPath);
     if (result.state.score > startingScore) return { first, steps: 1 };
-    candidates.push({ first, state: result.state, keepRow: result.doubled === 'replace' });
-    if (candidates.length >= 6) break;
+    const consumedPause = state.skipNextRise && !result.state.skipNextRise;
+    if (seenFirstStates) {
+      const stateKey = JSON.stringify({
+        pieces: result.state.pieces.map((item) => ({
+          id: item.id,
+          color: item.color,
+          cells: item.cells.map(cloneCell).sort((a, b) => a.y - b.y || a.x - b.x),
+          frame: item.frame,
+        })),
+        row: result.state.nextRow,
+        kind: result.state.nextRowKind,
+        skipNextRise: result.state.skipNextRise,
+        skipRiseUsed: result.state.skipRiseUsed,
+        rng: result.state._rng,
+        nextId: result.state._nextId,
+        score: result.state.score,
+        doubled: result.doubled ?? null,
+      });
+      if (seenFirstStates.has(stateKey)) continue;
+      seenFirstStates.add(stateKey);
+    }
+    candidates.push({ first, state: result.state, keepRow: result.doubled === 'replace' || consumedPause });
+    if (candidates.length >= maxFirstStates) break;
   }
 
   for (const candidate of candidates) {
@@ -612,13 +667,19 @@ function findTrialWitness(state, budget, firstActions) {
     const continuationState = { ...candidate.state, _witness: null };
     let continuationRow = null;
     let continuationRng = continuationState._rng;
-    if (!candidate.keepRow && !(state.skipNextRise && !candidate.state.skipNextRise)) {
+    let continuationKind = candidate.state.nextRowKind ?? 'regular';
+    let continuationMode = 'generated';
+    if (candidate.keepRow) {
+      continuationRow = copyRow(candidate.state.nextRow);
+      continuationMode = 'reserved';
+    } else {
       const random = createRandom(continuationState._rng);
       continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, continuationState._trialColor ?? continuationState.palette[0]);
       continuationRng = random.state;
       continuationState.nextRow = continuationRow;
       continuationState.nextRowKind = 'regular';
       continuationState._rng = continuationRng;
+      continuationKind = 'regular';
     }
 
     const secondActions = legalTrialActions(continuationState, budget, 16);
@@ -629,16 +690,31 @@ function findTrialWitness(state, budget, firstActions) {
       if (result.state.status === 'playing' && result.state.score > startingScore) {
         return {
           first: candidate.first,
+          second: actionSignature(action.type, action.pieceId, action.direction, action.preview.cells, action.preview.acceptedPath),
           steps: 2,
-          continuationRow: continuationRow ? copyRow(continuationRow) : null,
+          continuationRow: copyRow(continuationRow),
           continuationRng,
-          continuationKind: 'regular',
+          continuationKind,
+          continuationMode,
         };
       }
     }
     if (budget.exhausted) return null;
   }
   return null;
+}
+
+function findHeldWitness(state) {
+  if (!state.trial || state.status !== 'playing' || state.score >= HINT_SCORE_LIMIT) return null;
+  const poolBudget = makeTrialSearchBudget(0, 900, 1800);
+  const firstActions = legalTrialActions(state, poolBudget, 48);
+  if (!firstActions.length) return null;
+  const witnessBudget = makeTrialSearchBudget(220, 1400, 2800);
+  const witness = findTrialWitness(state, witnessBudget, firstActions, {
+    deduplicateFirstStates: true,
+    maxFirstStates: 12,
+  });
+  return witness;
 }
 
 function makeTrialSearchBudget(transitionLimit, previewLimit, searchLimit = previewLimit * 2) {
@@ -691,7 +767,7 @@ function selectTrialPreview(state, random) {
     const candidate = { ...state, nextRow: copyRow(fallbackRow), nextRowKind: 'regular', skipNextRise: true, _witness: null, _rng: fallbackRng };
     const skipBudget = makeTrialSearchBudget(180, 2400, 4500);
     const witness = findTrialWitness(candidate, skipBudget, firstActionPool);
-    if (witness) return { row: fallbackRow, kind: 'regular', skipNextRise: true, witness: null, rngState: fallbackRng };
+    if (witness) return { row: fallbackRow, kind: 'regular', skipNextRise: true, witness, rngState: fallbackRng };
   }
   return { row: fallbackRow, kind: 'regular', skipNextRise: false, witness: null, rngState: fallbackRng };
 }
@@ -758,7 +834,11 @@ function failedMutation(state, reason) {
   return { state, events: [], changed: false, reason };
 }
 
-function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true, prepareNext = true } = {}) {
+function finalizeMove(state, pieceId, preview, moveEvent, {
+  recordEvents = true,
+  prepareNext = true,
+  refreshHeldWitness = true,
+} = {}) {
   const original = findPiece(state, pieceId);
   const moved = {
     ...clonePiece(original),
@@ -777,6 +857,12 @@ function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true,
     turn: state.turn + 1,
     _nextId: idFactory.value(),
   };
+  const witness = prepareNext && state.trial ? state._witness : null;
+  const witnessMatches = Boolean(witness?.first && signaturesMatch(
+    witness.first,
+    actionSignature(moveEvent.type, pieceId, moveEvent.direction, preview.cells, preview.acceptedPath),
+  ));
+  const followingWitness = nextWitnessStep(witness, witnessMatches);
 
   if (nextState.pieces.some((piece) => piece.cells.some((cell) => cell.y === 0))) {
     nextState.status = 'gameover';
@@ -792,7 +878,8 @@ function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true,
     const doubleIds = makeIdFactory(nextState._nextId);
     doubleSingleRow(nextState, doubleIds.next, events);
     nextState._nextId = doubleIds.value();
-    nextState._witness = null;
+    nextState._witness = followingWitness
+      ?? (prepareNext && refreshHeldWitness ? findHeldWitness(nextState) : null);
     if (topOccupied(nextState.pieces)) {
       nextState.status = 'gameover';
       addSnapshotEvent(events, { type: 'gameover', reason: 'top-row' }, nextState.pieces);
@@ -804,7 +891,8 @@ function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true,
   if (state.trial && state.skipNextRise && settledStack !== 0) {
     nextState.skipNextRise = false;
     nextState.skipRiseUsed = true;
-    nextState._witness = null;
+    nextState._witness = followingWitness
+      ?? (prepareNext && refreshHeldWitness ? findHeldWitness(nextState) : null);
     if (topOccupied(nextState.pieces)) {
       nextState.status = 'gameover';
       addSnapshotEvent(events, { type: 'gameover', reason: 'top-row' }, nextState.pieces);
@@ -857,7 +945,7 @@ function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true,
       nextState.nextRow = copyRow(witness.continuationRow);
       nextState.nextRowKind = witness.continuationKind ?? 'regular';
       nextState._rng = witness.continuationRng;
-      nextState._witness = null;
+      nextState._witness = nextWitnessStep(witness, true);
     } else {
       nextState._witness = null;
       const random = createRandom(rngSeed);
@@ -877,9 +965,7 @@ function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true,
   };
 
   if (prepareNext) {
-    const witness = state.trial ? state._witness : null;
-    const currentSignature = actionSignature(moveEvent.type, pieceId, moveEvent.direction, preview.cells);
-    preparePreview(state._rng, witness, signaturesMatch(witness?.first, currentSignature));
+    preparePreview(state._rng, witness, witnessMatches);
     // Rare: the post-rise cascade emptied the whole board. Insert the fresh preview too
     // (it is doubled by the same rule) so the next turn has pieces to play.
     if (state.trial && nextState.pieces.length === 0) {
@@ -915,15 +1001,9 @@ export function rotatePiece(state, pieceId, direction = 'clockwise') {
 
 // ---------------------------------------------------------------------------
 // Trial hint ("Підказати хід", DEMO_PLAN.md section 17).
-// Pure: never mutates `state`, never reads or advances `state._rng`, and uses the
-// same simulation (finalizeMove with prepareNext: false) as the trial preview
-// selection, so a suggestion is exactly what the game would do for that action.
-//
-// Search budget (documented): the first-action pool holds the 96 best placements by
-// placement potential (BFS limited to 7000 search states / 3200 preview checks);
-// at most 160 of them are simulated for an immediate clear; the optional exact
-// two-action search reuses the preview-selection budget (220 transitions).
-// Measured p95 on 8 x 12 fuzz states is far below 60 ms (see tests).
+// Hint search runs the real turn simulation on temporary states, including preview
+// preparation when needed. The live board and its generator remain untouched.
+// The action pool and the replay budgets bound the work deterministically.
 // ---------------------------------------------------------------------------
 export const HINT_SCORE_LIMIT = 1000;
 const HINT_POOL_SIZE = 96;
@@ -960,41 +1040,110 @@ function bestImmediateClear(state, pool, simulationLimit) {
   return best;
 }
 
-function findPoolAction(pool, signature) {
-  return pool.find((candidate) => signaturesMatch(signature,
-    actionSignature(candidate.type, candidate.pieceId, candidate.direction, candidate.preview.cells)));
+function bestStoredImmediateClear(state) {
+  if (state._witness?.steps !== 1) return null;
+  const action = actionFromSignature(state, state._witness.first);
+  if (!action) return null;
+  const result = simulateTrialAction(state, action);
+  if (result.state.status !== 'playing' || result.state.score <= state.score) return null;
+  return { action, clears: (result.state.score - state.score) / 100 };
+}
+
+function actionFromSignature(state, signature) {
+  if (!signature) return null;
+  if (signature.type === 'rotate') {
+    const preview = previewRotation(state, signature.pieceId, signature.direction);
+    if (!preview.valid || !sameCells(preview.cells, signature.cells)) return null;
+    return { type: 'rotate', pieceId: signature.pieceId, direction: signature.direction, preview };
+  }
+  if (signature.type !== 'move' || !Array.isArray(signature.path)) return null;
+  const preview = previewMovePath(state, signature.pieceId, signature.path);
+  if (!preview.valid || preview.lastValidOffset.x !== signature.path.at(-1)?.x
+    || preview.lastValidOffset.y !== signature.path.at(-1)?.y
+    || !sameCells(preview.cells, signature.cells)) return null;
+  return { type: 'move', pieceId: signature.pieceId, path: preview.acceptedPath, preview };
 }
 
 export function suggestAction(state) {
   if (!state || state.trial !== true || state.status !== 'playing' || !(state.score < HINT_SCORE_LIMIT)) return null;
 
   const pool = legalTrialActions(state, makeTrialSearchBudget(0, 3200, 7000), HINT_POOL_SIZE);
-  if (!pool.length) return null;
 
   // (1) A single action that clears at least one row right now.
   const immediate = bestImmediateClear(state, pool, HINT_SIMULATION_LIMIT);
   if (immediate) return hintFromAction(immediate.action, 1, immediate.clears);
+  const storedImmediate = bestStoredImmediateClear(state);
+  if (storedImmediate) return hintFromAction(storedImmediate.action, 1, storedImmediate.clears);
+  if (!pool.length) return null;
 
   // (2) First action of the two-action path the game itself committed to for the
   // reserved preview row (state._witness, installed together with that row).
   const witness = state._witness;
-  if (witness?.first) {
-    const action = findPoolAction(pool, witness.first);
-    if (action && simulateTrialAction(state, action).state.status === 'playing') return hintFromAction(action, 2, 0);
+  if (witness?.steps === 2 && witness.first && witness.second && witness.continuationRow) {
+    const action = actionFromSignature(state, witness.first);
+    if (action) {
+      const firstResult = simulateTrialAction(state, action);
+      if (firstResult.state.status === 'playing') {
+        const heldPreview = firstResult.doubled === 'replace'
+          || (state.skipNextRise && !firstResult.state.skipNextRise);
+        const rowMatches = JSON.stringify(firstResult.state.nextRow) === JSON.stringify(witness.continuationRow);
+        const heldMatches = witness.continuationMode !== 'reserved'
+          || (heldPreview && rowMatches && firstResult.state.nextRowKind === witness.continuationKind
+            && firstResult.state._rng === witness.continuationRng);
+        if (heldMatches) {
+          const continuation = {
+            ...firstResult.state,
+            nextRow: copyRow(witness.continuationRow),
+            nextRowKind: witness.continuationKind ?? 'regular',
+            _rng: witness.continuationRng,
+          };
+          const second = actionFromSignature(continuation, witness.second);
+          if (second) {
+            const secondResult = simulateTrialAction(continuation, second);
+            if (secondResult.state.status === 'playing' && secondResult.state.score > state.score) {
+              return hintFromAction(action, 2, 0);
+            }
+          }
+        }
+      }
+    }
   }
 
-  // (2b) No stored witness (the game drops it after a doubling or pause turn): replay
-  // the real move, which is deterministic because it uses state._rng on a copy, and
-  // accept a first action whose resulting state has a clearing action. Bounded to
-  // the few best-ranked first actions.
-  let replays = 0;
-  for (const action of pool) {
-    if (replays >= HINT_REPLAY_LIMIT) break;
-    const event = action.type === 'rotate'
-      ? { type: 'rotate', pieceId: action.pieceId, direction: action.direction }
-      : { type: 'move', pieceId: action.pieceId, path: action.preview.acceptedPath, lastValidOffset: action.preview.lastValidOffset };
-    replays += 1;
-    const after = finalizeMove(state, action.pieceId, action.preview, event, { recordEvents: false, prepareNext: true }).state;
+  // After a doubled row or consumed pause there may be no stored witness. Search
+  // quietly against the held preview, then validate the promising first step with
+  // the exact live preview transition before returning any two-step hint.
+  const replayWitness = findTrialWitness(
+    state,
+    makeTrialSearchBudget(220, 1800, 3600),
+    pool.slice(0, 40),
+    { deduplicateFirstStates: true, maxFirstStates: 12 },
+  );
+  if (replayWitness?.first) {
+    const first = actionFromSignature(state, replayWitness.first);
+    if (first) {
+      const committed = simulateTrialAction(state, first, { prepareNext: true }).state;
+      if (committed.status === 'playing' && committed.score > state.score) return hintFromAction(first, 1, (committed.score - state.score) / 100);
+      if (committed.status === 'playing' && replayWitness.steps === 2) {
+        let witnessValidated = false;
+        const verifiedSecond = replayWitness.second && actionFromSignature(committed, replayWitness.second);
+        if (verifiedSecond) {
+          const result = simulateTrialAction(committed, verifiedSecond);
+          witnessValidated = result.state.status === 'playing' && result.state.score > state.score;
+        }
+        if (witnessValidated) {
+          const followPool = legalTrialActions(committed, makeTrialSearchBudget(0, 1600, 3200), HINT_POOL_SIZE);
+          const follow = bestImmediateClear(committed, followPool, HINT_SIMULATION_LIMIT)
+            ?? bestStoredImmediateClear(committed);
+          if (follow) return hintFromAction(first, 2, 0);
+        }
+      }
+    }
+  }
+
+  // (2b) No usable saved witness: exactly replay a small top-ranked subset through
+  // the live preview selector and accept only a first step whose actual next state clears.
+  for (const action of pool.slice(0, HINT_REPLAY_LIMIT)) {
+    const after = simulateTrialAction(state, action, { prepareNext: true }).state;
     if (after.status !== 'playing') continue;
     const followUp = legalTrialActions(after, makeTrialSearchBudget(0, 3200, 7000), 48);
     if (bestImmediateClear(after, followUp, 64)) return hintFromAction(action, 2, 0);

@@ -1,4 +1,4 @@
-import { createGame, movePieceAlongPath, previewRotation, rotatePiece } from './core/game.mjs';
+import { HINT_SCORE_LIMIT, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction } from './core/game.mjs';
 import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -13,13 +13,27 @@ let state, scene = [], displayedRow = [], displayedScore = 0, selectedId = null,
 let cell = 28, busy = false, actionEpoch = 0, activePhase = null, rotationTween = null;
 let tween = null, animationFrame = 0, renderRequest = 0;
 let hintDirection = 'clockwise';
+let suggestion = null, suggestionFrame = 0, hintVisible = true;
+const hintButton = $('hintButton');
+let successfulActions = 0, rotated = false, selectHintShown = false;
+const ROTATE_IDLE_HINT = 'Торкнись фігури: зі світлою рамкою її можна й повернути.';
+const ROTATE_SELECT_HINT = 'Фігури зі світлою рамкою можна повернути кнопками Вліво / Вправо.';
 const rotationPreviews = new Map();
 
 function seed() {
   if (globalThis.crypto?.getRandomValues) return crypto.getRandomValues(new Uint32Array(1))[0];
   return Date.now() >>> 0;
 }
-function message(text, tone = '') { $('status').textContent = text; $('status').className = `status ${tone}`; }
+function message(text, tone = '', fit = false) {
+  const status = $('status');
+  status.textContent = text; status.className = `status ${tone}`; status.style.fontSize = '';
+  if (fit && status.scrollWidth > status.clientWidth) {
+    // Long hint text stays on one line: shrink it (down to 8px) instead of changing the layout.
+    const size = Number.parseFloat(getComputedStyle(status).fontSize);
+    status.style.fontSize = `${Math.max(8, Math.floor(size * status.clientWidth / status.scrollWidth * 10) / 10)}px`;
+  }
+}
+function rotationHintActive() { return !rotated && successfulActions < 2 && state.status === 'playing' && rotationPreviews.size > 0; }
 function piece(id) { return state.pieces.find((item) => item.id === id); }
 function invalidFeedback(text) {
   message(text, 'bad'); frame.classList.remove('invalid'); void frame.offsetWidth; frame.classList.add('invalid');
@@ -108,6 +122,20 @@ function drawHint(cells, blocked = false) {
   ctx.fill(); ctx.stroke();
   ctx.restore();
 }
+function drawSuggestion() {
+  if (!suggestion || suggestion.kind !== 'move') return;
+  const source = piece(suggestion.pieceId);
+  if (!source) return;
+  const pulse = reducedMotion.matches ? 1 : .55 + .45 * Math.sin(performance.now() / 260);
+  drawPiece({ ...source, cells: suggestion.cells }, .3 + .15 * pulse, false);
+  const xs = suggestion.cells.map((p) => p.x), ys = suggestion.cells.map((p) => p.y);
+  const left = Math.min(...xs), top = Math.min(...ys);
+  const width = Math.max(...xs) - left + 1, height = Math.max(...ys) - top + 1;
+  ctx.save(); ctx.fillStyle = '#d58bff26'; ctx.strokeStyle = '#d58bff'; ctx.globalAlpha = .45 + .55 * pulse;
+  ctx.lineWidth = 2.5; ctx.setLineDash([6, 4]);
+  ctx.beginPath(); roundRectPath(ctx, left * cell + 2, top * cell + 2, width * cell - 4, height * cell - 4, Math.max(2, cell * .16));
+  ctx.fill(); ctx.stroke(); ctx.restore();
+}
 function movedDrawing(item, offset) {
   return { ...item, cells: item.cells.map((c) => ({ x: c.x + offset.x, y: c.y + offset.y })) };
 }
@@ -139,6 +167,12 @@ function render() {
   for (const [direction, button] of Object.entries(rotationButtons)) {
     button.disabled = !rotationHints?.[direction];
   }
+  if (!busy) hintVisible = state.trial === true && state.status === 'playing' && state.score < HINT_SCORE_LIMIT;
+  hintButton.classList.toggle('is-off', !hintVisible);
+  hintButton.disabled = busy || Boolean(drag) || !hintVisible;
+  for (const [direction, button] of Object.entries(rotationButtons)) {
+    button.classList.toggle('hint-target', Boolean(suggestion) && !busy && suggestion.kind === 'rotate' && suggestion.direction === direction);
+  }
   ctx.clearRect(0, 0, board.width, board.height);
   ctx.fillStyle = '#0c182a'; ctx.fillRect(0, 0, state.cols * cell, state.rows * cell);
   for (let y = 0; y < state.rows; y++) for (let x = 0; x < state.cols; x++) {
@@ -164,6 +198,7 @@ function render() {
     ctx.fillStyle = `rgba(129,255,215,${.16 * (1 - activePhase.progress)})`;
     for (const y of activePhase.rows) ctx.fillRect(0, y * cell, state.cols * cell, cell);
   }
+  if (!busy) drawSuggestion();
   if (drag?.moved) {
     const selected = piece(drag.id);
     drawHint(movedDrawing(selected, drag.offset).cells, drag.blocked);
@@ -179,6 +214,29 @@ function render() {
   $('gameOver').hidden = state.status !== 'gameover' || busy;
   $('finalScore').textContent = state.score.toLocaleString('uk-UA');
   board.setAttribute('aria-label', `Поле ${state.cols} на ${state.rows}. Очки: ${displayedScore}. Ходів: ${state.turn}. ${selectedId ? 'Фігуру обрано.' : 'Обери фігуру.'}`);
+}
+function clearSuggestion() {
+  suggestion = null; cancelAnimationFrame(suggestionFrame); suggestionFrame = 0;
+}
+function suggestionTick() {
+  suggestionFrame = 0;
+  if (!suggestion) return;
+  render();
+  if (!reducedMotion.matches && !document.hidden) suggestionFrame = requestAnimationFrame(suggestionTick);
+}
+function requestHint() {
+  if (busy || drag || state.status !== 'playing' || !hintVisible) return;
+  const found = suggestAction(state);
+  clearSuggestion();
+  if (!found) { message('Підказка недоступна: шлях не знайдено.', '', true); render(); return; }
+  suggestion = found; selectedId = found.pieceId;
+  if (found.kind === 'rotate') {
+    hintDirection = found.direction;
+    message(`Підказка: поверни фігуру ${found.direction === 'clockwise' ? 'вправо' : 'вліво'}.`, 'good', true);
+  } else {
+    message(found.steps === 2 ? 'Підказка: перемісти сюди, це готує очищення.' : 'Підказка: перемісти фігуру сюди.', 'good', true);
+  }
+  render(); suggestionTick();
 }
 function cancelTween() {
   cancelAnimationFrame(animationFrame);
@@ -201,10 +259,14 @@ function animate(duration, update) {
     animationFrame = requestAnimationFrame(tick);
   });
 }
-function completedMessage(gained = 0) {
+function completedMessage(gained = 0, doubled = false) {
+  const doubledText = doubled === 'after-rise' ? 'Додано ряд, поле подвоїлось.' : state.skipNextRise ? 'Поле подвоїлось. Наступний хід без підйому.' : 'Поле подвоїлось. Показаний ряд чекає.';
   if (state.status === 'gameover') message('Верхній ряд зайнятий.', 'bad');
+  else if (gained && doubled) message(`Прибрано рядів: ${gained / 100} · +${gained}. ${doubledText}`, 'good');
   else if (gained) message(`Прибрано рядів: ${gained / 100} · +${gained} очок`, 'good');
+  else if (doubled) message(doubledText, 'good');
   else if (state.skipNextRise) message('Наступний хід без підйому.', 'good');
+  else if (rotationHintActive()) message(ROTATE_IDLE_HINT);
   else message('Обирай фігуру для наступного ходу.');
 }
 function finishPlayback() {
@@ -214,21 +276,24 @@ function finishPlayback() {
   frame.classList.remove('resolve'); completedMessage(); render();
 }
 function startGame() {
-  actionEpoch++; cancelTween(); cancelDrag(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
-  hintDirection = 'clockwise';
+  actionEpoch++; cancelTween(); cancelDrag(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
+  hintDirection = 'clockwise'; successfulActions = 0; rotated = false; selectHintShown = false;
   state = createGame({ cols: 8, rows: 12, seed: seed(), trial: true });
   scene = state.pieces; displayedScore = state.score;
   showNextRow(); refreshRotationPreviews();
   board.classList.remove('dragging'); frame.classList.remove('resolve', 'invalid'); $('gain').classList.remove('show');
   if (state.skipNextRise) completedMessage();
-  else message('Торкнись фігури, щоб обрати.');
+  else message(rotationHintActive() ? ROTATE_IDLE_HINT : 'Торкнись фігури, щоб обрати.');
   resize();
 }
 async function commit(result, initialScene = scene) {
   if (!result.changed) { invalidFeedback('Шлях зайнятий. Спробуй обійти перешкоду.'); render(); return; }
   const epoch = ++actionEpoch, oldScore = state.score;
+  successfulActions++; clearSuggestion();
   state = result.state; selectedId = null; busy = true; scene = initialScene;
   message('Фігури займають свої місця…'); render();
+  const hasDouble = result.events.some((event) => event.type === 'double');
+  const doubled = hasDouble && (result.events.some((event) => event.type === 'rise') ? 'after-rise' : 'replace');
   for (const phase of buildPlayback(initialScene, result.events)) {
     activePhase = { ...phase, progress: 0 };
     if (phase.type === 'rotate') {
@@ -258,12 +323,12 @@ async function commit(result, initialScene = scene) {
   }
   scene = state.pieces; displayedScore = state.score;
   showNextRow(); refreshRotationPreviews();
-  activePhase = null; busy = false; completedMessage(state.score - oldScore); render();
+  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled); render();
 }
 function rotate(direction) {
   if (busy || drag || !selectedId || state.status !== 'playing') return;
   const result = rotatePiece(state, selectedId, direction);
-  if (result.changed) commit(result);
+  if (result.changed) { rotated = true; commit(result); }
 }
 function processDragSample(event) {
   if (!drag) return;
@@ -279,6 +344,7 @@ board.addEventListener('pointerdown', (event) => {
   const x = Math.floor((event.clientX - rect.left) / cell), y = Math.floor((event.clientY - rect.top) / cell);
   const hit = state.pieces.find((p) => p.cells.some((c) => c.x === x && c.y === y));
   selectedId = hit?.id ?? null;
+  if (suggestion && suggestion.pieceId !== selectedId) clearSuggestion();
   if (hit) {
     drag = { id: hit.id, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId,
       path: [{ x: 0, y: 0 }], offset: { x: 0, y: 0 }, floating: { x: 0, y: 0 }, moved: false, blocked: false };
@@ -305,7 +371,12 @@ board.addEventListener('pointerup', (event) => {
     commit(movePieceAlongPath(state, completed.id, completed.path), initialScene);
   } else if (completed.moved && Math.hypot(completed.floating.x, completed.floating.y) > .001) {
     snapBack(initialScene);
-  } else render();
+  } else {
+    if (selectedId && !selectHintShown && rotationHintActive() && rotationPreviews.has(selectedId)) {
+      selectHintShown = true; message(ROTATE_SELECT_HINT);
+    }
+    render();
+  }
 });
 async function snapBack(initialScene) {
   const epoch = ++actionEpoch; busy = true;
@@ -336,6 +407,7 @@ for (const [direction, button] of Object.entries(rotationButtons)) {
   button.addEventListener('focus', showHint);
   button.addEventListener('click', () => rotate(direction));
 }
+hintButton.addEventListener('click', requestHint);
 $('newGameButton').addEventListener('click', startGame); $('retryButton').addEventListener('click', startGame);
 $('helpButton').addEventListener('click', () => $('helpDialog').showModal());
 $('closeHelp').addEventListener('click', () => $('helpDialog').close()); $('playButton').addEventListener('click', () => $('helpDialog').close());
