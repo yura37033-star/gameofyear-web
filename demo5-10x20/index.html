@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101c31">
+  <meta name="description" content="Кольорові ряди — головоломка з поворотами й ланцюговим очищенням одноколірних рядів.">
+  <title>Кольорові ряди · Gameofyear</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23101c31'/%3E%3Cpath d='M7 7h8v8H7z' fill='%235D8FE8'/%3E%3Cpath d='M17 7h8v8h-8z' fill='%23F3C969'/%3E%3Cpath d='M7 17h8v8H7z' fill='%23F3C969'/%3E%3Cpath d='M17 17h8v8h-8z' fill='%235D8FE8'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="layout">
+    <aside class="intro" aria-label="Про гру">
+      <span class="eyebrow"><i></i> GAMEOFYEAR</span>
+      <h1>Знайди<br>свій <em>хід.</em></h1>
+      <p>Рухай і повертай фігури. Заповнюй горизонтальні ряди одним кольором.</p>
+      <div class="intro-tiles" aria-hidden="true"><b></b><b></b><b></b><b></b></div>
+      <div class="intro-note"><p>Після кожного ходу знизу піднімається показаний ряд. Усі фігури в ньому одного кольору.</p></div>
+    </aside>
+
+    <section class="game-shell" aria-label="Кольорові ряди">
+      <header class="masthead">
+        <div class="brand"><div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div><span>Кольорові ряди<small>ДЕМО 5</small></span></div>
+        <button id="helpButton" class="icon-button" type="button" aria-label="Як грати">?</button>
+      </header>
+
+      <div class="hud">
+        <div><span class="label">ОЧКИ</span><strong id="score">0</strong></div>
+        <div class="turn-card"><span class="label">ХОДІВ</span><b id="turn">0</b></div>
+        <div class="field-badge">10 <span>×</span> 20</div>
+      </div>
+
+      <div id="boardSlot" class="board-slot">
+        <div id="boardFrame" class="board-frame">
+          <canvas id="board" aria-label="Ігрове поле. Вибери фігуру й перетягни вільним шляхом у будь-який бік." tabindex="0"></canvas>
+          <div id="gameOver" class="game-over" hidden>
+            <div class="game-over-card"><span class="eyebrow">ДОБРА СПРОБА</span><h2>Гру завершено</h2><p>Поле досягло верхньої межі.</p><strong id="finalScore">0</strong><span class="label">НАБРАНО ОЧОК</span><button id="retryButton" class="primary-button" type="button">Ще партію <span>↗</span></button></div>
+          </div>
+          <div id="gain" class="score-gain" aria-hidden="true"></div>
+        </div>
+      </div>
+
+      <section class="next-section" aria-label="Наступний ряд">
+        <div class="next-label"><span>НАСТУПНИЙ РЯД</span><span class="next-arrow" aria-hidden="true">↑</span></div>
+        <canvas id="nextRow" aria-label="Фігури та кольори наступного ряду"></canvas>
+      </section>
+
+      <div class="toolbar">
+        <button id="rotateLeftButton" class="rotate-button" type="button" aria-label="Повернути вліво" disabled><span class="rotate-icon" aria-hidden="true">↶</span>Вліво</button>
+        <button id="rotateRightButton" class="rotate-button" type="button" aria-label="Повернути вправо" disabled><span class="rotate-icon" aria-hidden="true">↷</span>Вправо</button>
+        <button id="newGameButton" class="new-game-button" type="button">Нова гра</button>
+      </div>
+      <p id="status" class="status" role="status" aria-live="polite">Торкнись фігури, щоб обрати.</p>
+      <noscript>Для гри потрібно увімкнути JavaScript у браузері.</noscript>
+    </section>
+  </main>
+
+  <dialog id="helpDialog" aria-labelledby="helpTitle">
+    <div class="help-heading"><span class="eyebrow">ТВІЙ НАСТУПНИЙ ХІД</span><button id="closeHelp" class="icon-button" type="button" aria-label="Закрити правила">×</button></div>
+    <h2 id="helpTitle">Як грати</h2>
+    <ol class="rules">
+      <li><b>Переміщуй фігури</b><p>Перетягни фігуру вгору, вниз або вбік вільним шляхом. Зміна позиції після відпускання коштує один хід.</p></li>
+      <li><b>Повертай вліво або вправо</b><p>Торкнись фігури й натисни доступну кнопку повороту. Поворот витрачає один хід. Якщо сусіди не лишають місця, поворот може підняти фігуру на 1–3 клітинки, щоб смужка стала на опору; без місця зверху поворот недоступний. Усі фігури без опори падають, а хід одразу зараховується.</p></li>
+      <li><b>Збирай повні ряди одного кольору</b><p>Повний горизонтальний ряд одного кольору зникає й дає 100 очок. Змішані ряди лишаються на полі.</p></li>
+    </ol>
+    <div class="help-tip">Після осідання й очищення знизу підніметься показаний ряд. Якщо він виштовхне фігури за верх поля, партія закінчиться.</div>
+    <button id="playButton" class="primary-button" type="button">До гри <span>→</span></button>
+  </dialog>
+  <script type="module" src="./main.mjs"></script>
+</body>
+</html>
