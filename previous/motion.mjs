@@ -70,6 +70,12 @@ export function simplifyPath(path) {
 // Floating positions that are mathematically integers can be off by a few ulps;
 // treat contact within this tolerance as touching, not overlapping.
 const EPSILON = 1e-9;
+// At an isolated flush corner the smaller component is treated as finger noise
+// (and dropped) when it is at most this fraction of the larger one.
+const CORNER_SLIDE_RATIO = .5;
+// ...and a corner touch holds still until the larger remaining component exceeds this
+// (in cells), so wobble around a lane entrance cannot pull the piece off its lane.
+const CORNER_DEAD_ZONE = .2;
 
 function crossingTimes(start, velocity, obstacle) {
   if (Math.abs(velocity) <= EPSILON) {
@@ -120,7 +126,7 @@ function earliestContact(piece, pieces, from, delta, cols, rows) {
   // touches the shared corner. Preserve the face tangent and ignore that
   // incidental corner normal; isolated corners still block both axes.
   const normals = earliest.faceNormals.size ? earliest.faceNormals : earliest.cornerNormals;
-  return { time: earliest.time, normals };
+  return { time: earliest.time, normals, corner: !earliest.faceNormals.size };
 }
 
 // Sweep the continuous offset and project remaining motion along each contact surface.
@@ -148,6 +154,14 @@ export function constrainDragOffset(piece, pieces, from, requested, cols, rows) 
       x: hit.normals.has('x') ? 0 : remainder.x,
       y: hit.normals.has('y') ? 0 : remainder.y,
     };
+    if (hit.corner) {
+      // A lone corner touch: a mostly axis-aligned motion slides along the face
+      // it grazes; a true diagonal into the corner still stops both axes.
+      const ax = Math.abs(remainder.x), ay = Math.abs(remainder.y);
+      if (Math.max(ax, ay) < CORNER_DEAD_ZONE) { /* hold still */ }
+      else if (ay <= ax * CORNER_SLIDE_RATIO) next.x = remainder.x;
+      else if (ax <= ay * CORNER_SLIDE_RATIO) next.y = remainder.y;
+    }
     blocked ||= Math.abs(next.x - remaining.x) + Math.abs(next.y - remaining.y) > 1e-12;
     remaining = next;
     if (contact === 2 && Math.abs(remaining.x) + Math.abs(remaining.y) > 1e-12) blocked = true;

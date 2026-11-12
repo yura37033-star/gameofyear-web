@@ -2,7 +2,7 @@ import { createGame, movePieceAlongPath, previewRotation, rotatePiece } from './
 import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs';
 
 const $ = (id) => document.getElementById(id);
-const board = $('board'), nextCanvas = $('nextRow'), slot = $('boardSlot'), frame = $('boardFrame');
+const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
 const ctx = board.getContext('2d'), nextCtx = nextCanvas.getContext('2d');
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const rotationButtons = {
@@ -13,6 +13,7 @@ let state, scene = [], displayedRow = [], displayedScore = 0, selectedId = null,
 let cell = 28, busy = false, actionEpoch = 0, activePhase = null, rotationTween = null;
 let tween = null, animationFrame = 0, renderRequest = 0;
 let hintDirection = 'clockwise';
+const rotationPreviews = new Map();
 
 function seed() {
   if (globalThis.crypto?.getRandomValues) return crypto.getRandomValues(new Uint32Array(1))[0];
@@ -34,8 +35,13 @@ function setCanvas(canvas, context, width, height) {
 }
 function resize() {
   if (!state) return;
-  const box = slot.getBoundingClientRect();
-  const nextCell = Math.max(8, Math.floor(Math.min((box.width - 14) / state.cols, (box.height - 14) / state.rows, 38)));
+  const frameWidth = frame.offsetWidth - board.offsetWidth;
+  const frameHeight = frame.offsetHeight - board.offsetHeight;
+  const labelHeight = nextCanvas.parentElement.offsetHeight - nextCanvas.offsetHeight;
+  const gap = Number.parseFloat(getComputedStyle(playArea).rowGap) || 0;
+  const widthPerCell = (playArea.clientWidth - frameWidth) / state.cols;
+  const heightPerCell = (playArea.clientHeight - frameHeight - labelHeight - gap) / (state.rows + 1);
+  const nextCell = Math.max(8, Math.floor(Math.min(widthPerCell, heightPerCell)));
   if (nextCell !== cell && drag) cancelDrag();
   cell = nextCell;
   setCanvas(board, ctx, cell * state.cols, cell * state.rows);
@@ -57,7 +63,7 @@ function roundRectPath(context, x, y, w, h, r) {
   context.arcTo(x, y, x + w, y, radius);
   context.closePath();
 }
-function drawBar(context, x, y, width, height, color, alpha = 1, scale = 1, selected = false) {
+function drawBar(context, x, y, width, height, color, alpha = 1, scale = 1, selected = false, canRotate = false) {
   const gap = Math.max(1, cell * .065), radius = Math.max(2, cell * .15);
   const left = x * cell + gap, top = y * cell + gap;
   const barWidth = width * cell - gap * 2, barHeight = height * cell - gap * 2;
@@ -71,12 +77,12 @@ function drawBar(context, x, y, width, height, color, alpha = 1, scale = 1, sele
   gradient.addColorStop(1, color);
   context.fillStyle = gradient;
   context.beginPath(); roundRectPath(context, left, top, barWidth, barHeight, radius); context.fill();
-  context.strokeStyle = selected ? '#fff5da' : '#ffffff54';
-  context.lineWidth = selected ? 2 : 1;
+  context.strokeStyle = selected ? '#fff5da' : canRotate ? '#d4dce8' : '#ffffff54';
+  context.lineWidth = selected || canRotate ? 2 : 1;
   context.stroke();
   context.restore();
 }
-function drawPiece(item, alpha = 1, selected = item.id === selectedId) {
+function drawPiece(item, alpha = 1, selected = item.id === selectedId, canRotate = false) {
   const vertical = item.cells.some((p) => p.y !== item.cells[0].y);
   const axis = vertical ? 'y' : 'x';
   const ordered = [...item.cells].sort((a, b) => a[axis] - b[axis]);
@@ -88,7 +94,7 @@ function drawPiece(item, alpha = 1, selected = item.id === selectedId) {
       ordered[end].opacity === first.opacity && ordered[end].scale === first.scale) end++;
     const length = end - start;
     drawBar(ctx, first.x, first.y, vertical ? 1 : length, vertical ? length : 1,
-      item.color, alpha * (first.opacity ?? 1), first.scale ?? 1, selected);
+      item.color, alpha * (first.opacity ?? 1), first.scale ?? 1, selected, canRotate);
     start = end;
   }
 }
@@ -105,14 +111,33 @@ function drawHint(cells, blocked = false) {
 function movedDrawing(item, offset) {
   return { ...item, cells: item.cells.map((c) => ({ x: c.x + offset.x, y: c.y + offset.y })) };
 }
+function refreshRotationPreviews() {
+  rotationPreviews.clear();
+  if (state.status !== 'playing') return;
+  for (const item of state.pieces) {
+    if (item.cells.length === 1) continue;
+    const hints = {};
+    for (const direction of Object.keys(rotationButtons)) {
+      const preview = previewRotation(state, item.id, direction);
+      if (preview.valid) hints[direction] = preview.cells;
+    }
+    if (hints.clockwise || hints.counterclockwise) rotationPreviews.set(item.id, hints);
+  }
+}
+function showNextRow() {
+  const playing = state.status === 'playing';
+  displayedRow = playing ? state.nextRow : [];
+  const label = state.skipNextRise && playing ? 'Ряд після паузи'
+    : state.nextRowKind === 'rescue' && playing ? 'Рятувальний ряд' : 'Наступний ряд';
+  $('nextRowLabel').textContent = label;
+  nextCanvas.setAttribute('aria-label', label);
+}
 function render() {
   if (!state) return;
-  const canRotate = selectedId && !busy && !drag && state.status === 'playing';
-  const rotationHints = {};
+  const showRotation = !busy && !drag && state.status === 'playing';
+  const rotationHints = showRotation && rotationPreviews.get(selectedId);
   for (const [direction, button] of Object.entries(rotationButtons)) {
-    const preview = canRotate && previewRotation(state, selectedId, direction);
-    button.disabled = !preview?.valid;
-    if (preview?.valid) rotationHints[direction] = preview.cells;
+    button.disabled = !rotationHints?.[direction];
   }
   ctx.clearRect(0, 0, board.width, board.height);
   ctx.fillStyle = '#0c182a'; ctx.fillRect(0, 0, state.cols * cell, state.rows * cell);
@@ -120,9 +145,9 @@ function render() {
     ctx.fillStyle = (x + y) % 2 ? '#14233a61' : '#17283e61';
     ctx.beginPath(); roundRectPath(ctx, x * cell + 1, y * cell + 1, cell - 2, cell - 2, 3); ctx.fill();
   }
-  const danger = scene.some((p) => p.cells.some((c) => c.y <= 2));
+  const danger = scene.some((p) => p.cells.some((c) => c.y <= 1));
   frame.classList.toggle('danger', danger);
-  if (danger) { ctx.fillStyle = '#ff657408'; ctx.fillRect(0, 0, cell * state.cols, cell * 3); }
+  if (danger) { ctx.fillStyle = '#ff657414'; ctx.fillRect(0, 0, cell * state.cols, cell); }
   for (const item of scene) {
     if (rotationTween?.id === item.id) {
       const rotation = rotationTween, amount = 1 - (1 - rotation.progress) ** 3;
@@ -130,7 +155,10 @@ function render() {
       ctx.save(); ctx.translate((rotation.dx * amount) * cell, (rotation.dy * amount) * cell);
       ctx.translate(centerX, centerY); ctx.rotate(rotation.angle * amount); ctx.translate(-centerX, -centerY);
       drawPiece(item); ctx.restore();
-    } else drawPiece(item, drag?.moved && drag.id === item.id ? .12 : 1);
+    } else {
+      drawPiece(item, drag?.moved && drag.id === item.id ? .12 : 1,
+        item.id === selectedId, showRotation && rotationPreviews.has(item.id));
+    }
   }
   if (activePhase?.type === 'clear') {
     ctx.fillStyle = `rgba(129,255,215,${.16 * (1 - activePhase.progress)})`;
@@ -141,7 +169,7 @@ function render() {
     drawHint(movedDrawing(selected, drag.offset).cells, drag.blocked);
     drawPiece(movedDrawing(selected, drag.floating), 1, true);
   } else {
-    const hint = rotationHints[hintDirection] ?? rotationHints.clockwise ?? rotationHints.counterclockwise;
+    const hint = rotationHints?.[hintDirection] ?? rotationHints?.clockwise ?? rotationHints?.counterclockwise;
     if (hint) drawHint(hint);
   }
   nextCtx.clearRect(0, 0, state.cols * cell, cell);
@@ -174,22 +202,27 @@ function animate(duration, update) {
   });
 }
 function completedMessage(gained = 0) {
-  if (state.status === 'gameover') message('Поле переповнене. Спробуємо ще?', 'bad');
+  if (state.status === 'gameover') message('Верхній ряд зайнятий.', 'bad');
   else if (gained) message(`Прибрано рядів: ${gained / 100} · +${gained} очок`, 'good');
-  else message('Наступний ряд додано. Обирай новий хід.');
+  else if (state.skipNextRise) message('Наступний хід без підйому.', 'good');
+  else message('Обирай фігуру для наступного ходу.');
 }
 function finishPlayback() {
   actionEpoch++; cancelTween(); activePhase = null; rotationTween = null; busy = false;
-  scene = state.pieces; displayedScore = state.score; displayedRow = state.nextRow;
+  scene = state.pieces; displayedScore = state.score;
+  showNextRow(); refreshRotationPreviews();
   frame.classList.remove('resolve'); completedMessage(); render();
 }
 function startGame() {
   actionEpoch++; cancelTween(); cancelDrag(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
   hintDirection = 'clockwise';
-  state = createGame({ cols: 10, rows: 20, seed: seed() });
-  scene = state.pieces; displayedRow = state.nextRow; displayedScore = state.score;
+  state = createGame({ cols: 8, rows: 12, seed: seed(), trial: true });
+  scene = state.pieces; displayedScore = state.score;
+  showNextRow(); refreshRotationPreviews();
   board.classList.remove('dragging'); frame.classList.remove('resolve', 'invalid'); $('gain').classList.remove('show');
-  message('Торкнись фігури, щоб обрати.'); resize();
+  if (state.skipNextRise) completedMessage();
+  else message('Торкнись фігури, щоб обрати.');
+  resize();
 }
 async function commit(result, initialScene = scene) {
   if (!result.changed) { invalidFeedback('Шлях зайнятий. Спробуй обійти перешкоду.'); render(); return; }
@@ -222,9 +255,9 @@ async function commit(result, initialScene = scene) {
       displayedScore += phase.rows.length * 100;
       $('gain').textContent = `+${phase.rows.length * 100}`; $('gain').classList.remove('show'); void $('gain').offsetWidth; $('gain').classList.add('show');
     }
-    if (phase.type === 'rise') displayedRow = state.nextRow;
   }
-  scene = state.pieces; displayedScore = state.score; displayedRow = state.nextRow;
+  scene = state.pieces; displayedScore = state.score;
+  showNextRow(); refreshRotationPreviews();
   activePhase = null; busy = false; completedMessage(state.score - oldScore); render();
 }
 function rotate(direction) {
@@ -307,5 +340,5 @@ $('newGameButton').addEventListener('click', startGame); $('retryButton').addEve
 $('helpButton').addEventListener('click', () => $('helpDialog').showModal());
 $('closeHelp').addEventListener('click', () => $('helpDialog').close()); $('playButton').addEventListener('click', () => $('helpDialog').close());
 $('helpDialog').addEventListener('click', (e) => { if (e.target === $('helpDialog')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close(); } });
-new ResizeObserver(resize).observe(slot);
+new ResizeObserver(resize).observe(playArea);
 startGame();

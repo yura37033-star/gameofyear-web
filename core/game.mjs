@@ -410,6 +410,29 @@ function copyRow(row) {
   return row.map((segment) => ({ ...segment }));
 }
 
+function stackHeight(pieces, rows) {
+  let top = rows;
+  for (const piece of pieces) for (const cell of piece.cells) top = Math.min(top, cell.y);
+  return rows - top;
+}
+
+// Trial doubling: copies every piece of the single occupied row one row higher.
+// Deterministic (no RNG, no score); new ids come from the shared counter.
+function doubleSingleRow(state, nextId, events) {
+  const bottom = state.rows - 1;
+  const copies = state.pieces.map((piece) => ({
+    id: nextId(),
+    color: piece.color,
+    cells: piece.cells.map(({ x, y }) => ({ x, y: y - 1 })),
+    frame: { ...piece.frame, y: piece.frame.y - 1 },
+  }));
+  if (copies.some((piece) => piece.cells.some((cell) => cell.y !== bottom - 1))) {
+    throw new Error('doubling requires a single occupied row');
+  }
+  state.pieces = [...state.pieces, ...copies];
+  addSnapshotEvent(events, { type: 'double', rows: 1 }, state.pieces);
+}
+
 function topOccupied(pieces) {
   return pieces.some((piece) => piece.cells.some((cell) => cell.y === 0));
 }
@@ -580,7 +603,7 @@ function findTrialWitness(state, budget, firstActions) {
     if (result.state.status !== 'playing') continue;
     const first = actionSignature(action.type, action.pieceId, action.direction, action.preview.cells);
     if (result.state.score > startingScore) return { first, steps: 1 };
-    candidates.push({ first, state: result.state });
+    candidates.push({ first, state: result.state, keepRow: result.doubled === 'replace' });
     if (candidates.length >= 6) break;
   }
 
@@ -589,7 +612,7 @@ function findTrialWitness(state, budget, firstActions) {
     const continuationState = { ...candidate.state, _witness: null };
     let continuationRow = null;
     let continuationRng = continuationState._rng;
-    if (!(state.skipNextRise && !candidate.state.skipNextRise)) {
+    if (!candidate.keepRow && !(state.skipNextRise && !candidate.state.skipNextRise)) {
       const random = createRandom(continuationState._rng);
       continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, continuationState._trialColor ?? continuationState.palette[0]);
       continuationRng = random.state;
@@ -761,7 +784,24 @@ function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true,
     return { state: nextState, events: events ?? [], changed: true, reason: 'top-overflow' };
   }
 
-  if (state.trial && state.skipNextRise) {
+  let doubled = null;
+  const settledStack = state.trial ? stackHeight(nextState.pieces, state.rows) : null;
+  if (settledStack === 1) {
+    // Trial doubling replaces this turn's rise: the preview, its RNG state and the
+    // pause flags stay exactly as they were.
+    const doubleIds = makeIdFactory(nextState._nextId);
+    doubleSingleRow(nextState, doubleIds.next, events);
+    nextState._nextId = doubleIds.value();
+    nextState._witness = null;
+    if (topOccupied(nextState.pieces)) {
+      nextState.status = 'gameover';
+      addSnapshotEvent(events, { type: 'gameover', reason: 'top-row' }, nextState.pieces);
+      return { state: nextState, events: events ?? [], changed: true, reason: 'top-row', doubled: 'replace' };
+    }
+    return { state: nextState, events: events ?? [], changed: true, reason: null, doubled: 'replace' };
+  }
+
+  if (state.trial && state.skipNextRise && settledStack !== 0) {
     nextState.skipNextRise = false;
     nextState.skipRiseUsed = true;
     nextState._witness = null;
@@ -773,43 +813,54 @@ function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true,
     return { state: nextState, events: events ?? [], changed: true, reason: null };
   }
 
-  nextState.pieces = nextState.pieces.map((piece) => ({
-    ...piece,
-    cells: translateCells(piece.cells, 0, -1),
-    frame: { ...piece.frame, y: piece.frame.y - 1 },
-  }));
-  for (const segment of state.nextRow) {
-    const cells = Array.from({ length: segment.length }, (_, index) => ({ x: segment.x + index, y: state.rows - 1 }));
-    nextState.pieces.push({
-      id: `p${nextState._nextId++}`,
-      color: segment.color,
-      cells,
-      frame: makeFrame(cells),
-    });
-  }
-  addSnapshotEvent(events, { type: 'rise', rows: 1 }, nextState.pieces);
-  const postRiseIdFactory = makeIdFactory(nextState._nextId);
-  const postRisePhysics = resolvePhysics(nextState.pieces, state, events, postRiseIdFactory.next);
-  nextState.pieces = postRisePhysics.pieces;
-  nextState.score += postRisePhysics.score;
-  nextState._nextId = postRiseIdFactory.value();
-  if (state.trial && topOccupied(nextState.pieces)) {
-    nextState.status = 'gameover';
-    addSnapshotEvent(events, { type: 'gameover', reason: 'top-row' }, nextState.pieces);
-    return { state: nextState, events: events ?? [], changed: true, reason: 'top-row' };
-  }
+  // One rise: shift up, insert `row`, settle, clear, then (trial) double a lone row.
+  const rise = (row) => {
+    nextState.pieces = nextState.pieces.map((piece) => ({
+      ...piece,
+      cells: translateCells(piece.cells, 0, -1),
+      frame: { ...piece.frame, y: piece.frame.y - 1 },
+    }));
+    for (const segment of row) {
+      const cells = Array.from({ length: segment.length }, (_, index) => ({ x: segment.x + index, y: state.rows - 1 }));
+      nextState.pieces.push({
+        id: `p${nextState._nextId++}`,
+        color: segment.color,
+        cells,
+        frame: makeFrame(cells),
+      });
+    }
+    addSnapshotEvent(events, { type: 'rise', rows: 1 }, nextState.pieces);
+    const postRiseIdFactory = makeIdFactory(nextState._nextId);
+    const postRisePhysics = resolvePhysics(nextState.pieces, state, events, postRiseIdFactory.next);
+    nextState.pieces = postRisePhysics.pieces;
+    nextState.score += postRisePhysics.score;
+    nextState._nextId = postRiseIdFactory.value();
+    if (state.trial && stackHeight(nextState.pieces, state.rows) === 1) {
+      const doubleIds = makeIdFactory(nextState._nextId);
+      doubleSingleRow(nextState, doubleIds.next, events);
+      nextState._nextId = doubleIds.value();
+      doubled = 'after-rise';
+    }
+    if (state.trial && topOccupied(nextState.pieces)) {
+      nextState.status = 'gameover';
+      addSnapshotEvent(events, { type: 'gameover', reason: 'top-row' }, nextState.pieces);
+      return false;
+    }
+    return true;
+  };
+  const gameOver = () => ({ state: nextState, events: events ?? [], changed: true, reason: 'top-row', ...(doubled ? { doubled } : {}) });
 
-  if (prepareNext) {
-    const witness = state.trial ? state._witness : null;
-    const currentSignature = actionSignature(moveEvent.type, pieceId, moveEvent.direction, preview.cells);
-    if (witness && signaturesMatch(witness.first, currentSignature) && witness.continuationRow) {
+  if (!rise(state.nextRow)) return gameOver();
+
+  const preparePreview = (rngSeed, witness, signatureMatches) => {
+    if (witness && signatureMatches && witness.continuationRow) {
       nextState.nextRow = copyRow(witness.continuationRow);
       nextState.nextRowKind = witness.continuationKind ?? 'regular';
       nextState._rng = witness.continuationRng;
       nextState._witness = null;
     } else {
       nextState._witness = null;
-      const random = createRandom(state._rng);
+      const random = createRandom(rngSeed);
       if (state.trial) {
         const selection = selectTrialPreview(nextState, random);
         nextState.nextRow = selection.row;
@@ -823,8 +874,20 @@ function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true,
         nextState._rng = random.state;
       }
     }
+  };
+
+  if (prepareNext) {
+    const witness = state.trial ? state._witness : null;
+    const currentSignature = actionSignature(moveEvent.type, pieceId, moveEvent.direction, preview.cells);
+    preparePreview(state._rng, witness, signaturesMatch(witness?.first, currentSignature));
+    // Rare: the post-rise cascade emptied the whole board. Insert the fresh preview too
+    // (it is doubled by the same rule) so the next turn has pieces to play.
+    if (state.trial && nextState.pieces.length === 0) {
+      if (!rise(nextState.nextRow)) return gameOver();
+      preparePreview(nextState._rng, null, false);
+    }
   }
-  return { state: nextState, events: events ?? [], changed: true, reason: null };
+  return { state: nextState, events: events ?? [], changed: true, reason: null, ...(doubled ? { doubled } : {}) };
 }
 
 export function movePieceAlongPath(state, pieceId, path) {
@@ -848,4 +911,93 @@ export function rotatePiece(state, pieceId, direction = 'clockwise') {
   const preview = previewRotation(state, pieceId, direction);
   if (!preview.valid) return failedMutation(state, preview.reason);
   return finalizeMove(state, pieceId, preview, { type: 'rotate', pieceId, direction });
+}
+
+// ---------------------------------------------------------------------------
+// Trial hint ("Підказати хід", DEMO_PLAN.md section 17).
+// Pure: never mutates `state`, never reads or advances `state._rng`, and uses the
+// same simulation (finalizeMove with prepareNext: false) as the trial preview
+// selection, so a suggestion is exactly what the game would do for that action.
+//
+// Search budget (documented): the first-action pool holds the 96 best placements by
+// placement potential (BFS limited to 7000 search states / 3200 preview checks);
+// at most 160 of them are simulated for an immediate clear; the optional exact
+// two-action search reuses the preview-selection budget (220 transitions).
+// Measured p95 on 8 x 12 fuzz states is far below 60 ms (see tests).
+// ---------------------------------------------------------------------------
+export const HINT_SCORE_LIMIT = 1000;
+const HINT_POOL_SIZE = 96;
+const HINT_SIMULATION_LIMIT = 160;
+const HINT_REPLAY_LIMIT = 4;
+
+function hintFromAction(action, steps, clears) {
+  const base = { pieceId: action.pieceId, steps, clears };
+  if (action.type === 'rotate') {
+    return { kind: 'rotate', ...base, direction: action.direction, path: null, cells: action.preview.cells.map(cloneCell) };
+  }
+  return {
+    kind: 'move', ...base, direction: null,
+    path: action.preview.acceptedPath.map(cloneOffset),
+    offset: cloneOffset(action.preview.lastValidOffset),
+    cells: action.preview.cells.map(cloneCell),
+  };
+}
+
+// Best single action that clears now: most rows, then move over rotation, then the
+// shortest path. Pure helper shared by the tiers below.
+function bestImmediateClear(state, pool, simulationLimit) {
+  let best = null;
+  for (const action of pool.slice(0, simulationLimit)) {
+    const result = simulateTrialAction(state, action);
+    if (result.state.status !== 'playing' || result.state.score <= state.score) continue;
+    const clears = (result.state.score - state.score) / 100;
+    const length = action.type === 'move' ? action.path.length : 0;
+    const better = !best || clears > best.clears
+      || (clears === best.clears && ((best.action.type === 'rotate' && action.type === 'move')
+        || (best.action.type === action.type && length < best.length)));
+    if (better) best = { action, clears, length };
+  }
+  return best;
+}
+
+function findPoolAction(pool, signature) {
+  return pool.find((candidate) => signaturesMatch(signature,
+    actionSignature(candidate.type, candidate.pieceId, candidate.direction, candidate.preview.cells)));
+}
+
+export function suggestAction(state) {
+  if (!state || state.trial !== true || state.status !== 'playing' || !(state.score < HINT_SCORE_LIMIT)) return null;
+
+  const pool = legalTrialActions(state, makeTrialSearchBudget(0, 3200, 7000), HINT_POOL_SIZE);
+  if (!pool.length) return null;
+
+  // (1) A single action that clears at least one row right now.
+  const immediate = bestImmediateClear(state, pool, HINT_SIMULATION_LIMIT);
+  if (immediate) return hintFromAction(immediate.action, 1, immediate.clears);
+
+  // (2) First action of the two-action path the game itself committed to for the
+  // reserved preview row (state._witness, installed together with that row).
+  const witness = state._witness;
+  if (witness?.first) {
+    const action = findPoolAction(pool, witness.first);
+    if (action && simulateTrialAction(state, action).state.status === 'playing') return hintFromAction(action, 2, 0);
+  }
+
+  // (2b) No stored witness (the game drops it after a doubling or pause turn): replay
+  // the real move, which is deterministic because it uses state._rng on a copy, and
+  // accept a first action whose resulting state has a clearing action. Bounded to
+  // the few best-ranked first actions.
+  let replays = 0;
+  for (const action of pool) {
+    if (replays >= HINT_REPLAY_LIMIT) break;
+    const event = action.type === 'rotate'
+      ? { type: 'rotate', pieceId: action.pieceId, direction: action.direction }
+      : { type: 'move', pieceId: action.pieceId, path: action.preview.acceptedPath, lastValidOffset: action.preview.lastValidOffset };
+    replays += 1;
+    const after = finalizeMove(state, action.pieceId, action.preview, event, { recordEvents: false, prepareNext: true }).state;
+    if (after.status !== 'playing') continue;
+    const followUp = legalTrialActions(after, makeTrialSearchBudget(0, 3200, 7000), 48);
+    if (bestImmediateClear(after, followUp, 64)) return hintFromAction(action, 2, 0);
+  }
+  return null;
 }

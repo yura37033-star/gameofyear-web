@@ -27,7 +27,7 @@ export function buildPlayback(initialPieces, events) {
       const old = new Map(phase.from.map((piece) => [piece.id, piece]));
       const distance = Math.max(1, ...phase.to.map((piece) => Math.abs(piece.cells[0].y - (old.get(piece.id)?.cells[0].y ?? piece.cells[0].y))));
       phase.duration = Math.min(280, 120 + Math.sqrt(distance) * 35);
-    } else phase.duration = { move: 90, clear: 170, rise: 220, rotate: 150, gameover: 0 }[phase.type] ?? 0;
+    } else phase.duration = { move: 90, clear: 170, rise: 220, double: 220, rotate: 150, gameover: 0 }[phase.type] ?? 0;
   }
   return phases;
 }
@@ -43,6 +43,17 @@ export function samplePieces(phase, progress) {
     })) }));
   }
   const old = new Map(phase.from.map((piece) => [piece.id, piece]));
+  if (phase.type === 'double') {
+    // Existing pieces stay put; new copies grow and fade in from their source row below.
+    return phase.to.map((piece) => {
+      const before = old.get(piece.id);
+      if (before) return { ...piece, cells: piece.cells.map(({ x, y }) => ({ x, y, opacity: 1 })) };
+      const amount = easeOut(t);
+      return { ...piece, cells: piece.cells.map(({ x, y }) => ({
+        x, y: y + (1 - amount), opacity: amount, scale: .6 + .4 * amount,
+      })) };
+    });
+  }
   const amount = phase.type === 'fall' ? t * t : phase.type === 'rise' ? (1 - Math.cos(Math.PI * t)) / 2 : easeOut(t);
   return phase.to.map((piece) => {
     const before = old.get(piece.id);

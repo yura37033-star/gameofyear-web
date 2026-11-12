@@ -13,6 +13,7 @@ const clonePiece = (piece) => ({
 const cloneOffset = ({ x, y }) => ({ x, y });
 
 function addSnapshotEvent(events, event, pieces) {
+  if (!events) return;
   events.push({ ...event, pieces: pieces.map(clonePiece) });
 }
 
@@ -379,7 +380,300 @@ function fallbackStart(cols, rows, palette) {
   return pieces;
 }
 
-export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE } = {}) {
+function secondColorChance(score, incomingTurn) {
+  if (incomingTurn <= 4) return 0;
+  if (score <= 1000) return 0.1;
+  if (score >= 2000) return 0.35;
+  return 0.1 + ((score - 1000) / 1000) * 0.25;
+}
+
+function easySelectionChance(score) {
+  if (score <= 1000) return 1;
+  if (score >= 2000) return 0;
+  return (2000 - score) / 1000;
+}
+
+function generateTrialRow(cols, palette, random, incomingTurn, score, baseColor) {
+  const row = generateRow(cols, palette, random);
+  const chance = secondColorChance(score, incomingTurn);
+  for (const segment of row) {
+    segment.color = baseColor;
+    if (chance && palette.length > 1 && random() < chance) {
+      const alternatives = [...new Set(palette.filter((color) => color !== baseColor))];
+      if (alternatives.length) segment.color = alternatives[Math.floor(random() * alternatives.length)];
+    }
+  }
+  return row;
+}
+
+function copyRow(row) {
+  return row.map((segment) => ({ ...segment }));
+}
+
+function topOccupied(pieces) {
+  return pieces.some((piece) => piece.cells.some((cell) => cell.y === 0));
+}
+
+function actionSignature(type, pieceId, direction, cells) {
+  return {
+    type,
+    pieceId,
+    ...(type === 'rotate' ? { direction } : {}),
+    cells: cells.map(cloneCell).sort((a, b) => a.y - b.y || a.x - b.x),
+  };
+}
+
+function signaturesMatch(first, second) {
+  return Boolean(first && second && first.type === second.type && first.pieceId === second.pieceId
+    && first.direction === second.direction && JSON.stringify(first.cells) === JSON.stringify(second.cells));
+}
+
+function buildRescueRow(cols, palette, gapMask, random, incomingTurn, score, baseColor) {
+  const gaps = new Set(gapMask);
+  const segments = [];
+  for (let x = 0; x < cols;) {
+    if (gaps.has(x)) { x += 1; continue; }
+    const end = (() => { let next = x; while (next < cols && !gaps.has(next)) next += 1; return next; })();
+    const length = Math.min(4, end - x);
+    let color = baseColor;
+    const chance = secondColorChance(score, incomingTurn);
+    if (chance && palette.length > 1 && random() < chance) {
+      const alternatives = [...new Set(palette.filter((candidate) => candidate !== baseColor))];
+      if (alternatives.length) color = alternatives[Math.floor(random() * alternatives.length)];
+    }
+    segments.push({ x, length, color });
+    x += length;
+  }
+  return segments;
+}
+
+function rescueGapMasks(state) {
+  const candidates = [];
+  const columnDepths = Array(state.cols).fill(-1);
+  for (const piece of state.pieces) for (const cell of piece.cells) {
+    columnDepths[cell.x] = Math.max(columnDepths[cell.x], cell.y);
+  }
+  // Keep the mask search bounded on custom widths and leave room for a piece.
+  const columns = columnDepths.map((_, x) => x)
+    .sort((a, b) => columnDepths[b] - columnDepths[a] || a - b)
+    .slice(0, 8).sort((a, b) => a - b);
+  for (let gapCount = 2; gapCount <= Math.min(4, state.cols - 1); gapCount += 1) {
+    const choose = (start, selected) => {
+      if (selected.length === gapCount) {
+        let priority = 0;
+        for (const x of selected) {
+          const deepest = columnDepths[x];
+          if (deepest === state.rows - 1) priority += 3;
+          else if (deepest === state.rows - 2) priority += 2;
+          else if (deepest >= state.rows - 4) priority += 1;
+        }
+        candidates.push({ gaps: [...selected], priority });
+        return;
+      }
+      for (let index = start; index < columns.length; index += 1) {
+        choose(index + 1, [...selected, columns[index]]);
+      }
+    };
+    choose(0, []);
+  }
+  candidates.sort((a, b) => b.priority - a.priority || a.gaps[0] - b.gaps[0]
+    || a.gaps.length - b.gaps.length || a.gaps.join(',').localeCompare(b.gaps.join(',')));
+  return candidates;
+}
+
+function makePlacementPotential(state, piece) {
+  const rows = Array.from({ length: state.rows }, () => new Map());
+  for (const other of state.pieces) {
+    if (other.id === piece.id) continue;
+    for (const cell of other.cells) rows[cell.y].set(cell.x, other.color);
+  }
+  return (cells) => {
+    const affectedRows = new Set([...piece.cells, ...cells].map((cell) => cell.y));
+    const rowScores = [];
+    for (const y of affectedRows) {
+      const counts = new Map();
+      for (const color of rows[y].values()) counts.set(color, (counts.get(color) ?? 0) + 1);
+      for (const cell of cells) if (cell.y === y) counts.set(piece.color, (counts.get(piece.color) ?? 0) + 1);
+      const occupied = [...counts.values()].reduce((sum, count) => sum + count, 0);
+      const largest = Math.max(0, ...counts.values());
+      rowScores.push(occupied === state.cols && counts.size === 1 ? 10000 : largest * largest);
+    }
+    return rowScores.reduce((sum, value) => sum + value, 0);
+  };
+}
+
+function legalTrialActions(state, budget, maxActions = 48) {
+  const candidates = [];
+  const directions = [{ x: 0, y: -1 }, { x: -1, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }];
+  for (const piece of state.pieces) {
+    const potential = makePlacementPotential(state, piece);
+    const occupied = new Set(state.pieces.filter((other) => other.id !== piece.id)
+      .flatMap((other) => other.cells.map((cell) => `${cell.x},${cell.y}`)));
+    const validOffset = ({ x, y }) => piece.cells.every((cell) => {
+      const targetX = cell.x + x, targetY = cell.y + y;
+      return targetX >= 0 && targetX < state.cols && targetY >= 0 && targetY < state.rows
+        && !occupied.has(`${targetX},${targetY}`);
+    });
+    const queue = [{ offset: { x: 0, y: 0 }, path: [{ x: 0, y: 0 }] }];
+    const seen = new Set(['0,0']);
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const entry = queue[cursor];
+      for (const direction of directions) {
+        const offset = { x: entry.offset.x + direction.x, y: entry.offset.y + direction.y };
+        const key = `${offset.x},${offset.y}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        budget.searchStates += 1;
+        if (budget.searchStates > budget.searchLimit) { budget.exhausted = true; break; }
+        if (!validOffset(offset)) continue;
+        const path = [...entry.path, offset];
+        queue.push({ offset, path });
+        const cells = piece.cells.map((cell) => ({ x: cell.x + offset.x, y: cell.y + offset.y }));
+        candidates.push({ type: 'move', pieceId: piece.id, path, offset, cells, potential: potential(cells) });
+      }
+      if (budget.exhausted) break;
+    }
+    if (budget.exhausted) break;
+    for (const direction of ['clockwise', 'counterclockwise']) {
+      budget.searchStates += 1;
+      if (budget.searchStates > budget.searchLimit) { budget.exhausted = true; break; }
+      const preview = previewRotation(state, piece.id, direction);
+      if (!preview.valid) continue;
+      candidates.push({
+        type: 'rotate', pieceId: piece.id, direction, preview,
+        potential: potential(preview.cells),
+      });
+    }
+    if (budget.exhausted) break;
+  }
+
+  candidates.sort((a, b) => b.potential - a.potential || a.pieceId.localeCompare(b.pieceId)
+    || a.type.localeCompare(b.type) || (a.direction ?? '').localeCompare(b.direction ?? '')
+    || JSON.stringify(a.cells ?? a.preview.cells).localeCompare(JSON.stringify(b.cells ?? b.preview.cells)));
+  const actions = [];
+  for (const candidate of candidates.slice(0, maxActions * 2)) {
+    if (candidate.type === 'rotate') { actions.push(candidate); continue; }
+    budget.previewChecks += 1;
+    if (budget.previewChecks > budget.previewLimit) { budget.exhausted = true; break; }
+    const preview = previewMovePath(state, candidate.pieceId, candidate.path);
+    if (!preview.valid || preview.lastValidOffset.x !== candidate.offset.x || preview.lastValidOffset.y !== candidate.offset.y) continue;
+    actions.push({ ...candidate, preview });
+    if (actions.length >= maxActions) break;
+  }
+  return actions;
+}
+
+function simulateTrialAction(state, action) {
+  const event = action.type === 'rotate'
+    ? { type: 'rotate', pieceId: action.pieceId, direction: action.direction }
+    : { type: 'move', pieceId: action.pieceId, path: action.preview.acceptedPath, lastValidOffset: action.preview.lastValidOffset };
+  return finalizeMove(state, action.pieceId, action.preview, event, { recordEvents: false, prepareNext: false });
+}
+
+function findTrialWitness(state, budget, firstActions) {
+  const startingScore = state.score;
+  const candidates = [];
+  for (const action of firstActions) {
+    if (budget.transitions >= budget.transitionLimit) { budget.exhausted = true; break; }
+    budget.transitions += 1;
+    const result = simulateTrialAction(state, action);
+    if (result.state.status !== 'playing') continue;
+    const first = actionSignature(action.type, action.pieceId, action.direction, action.preview.cells);
+    if (result.state.score > startingScore) return { first, steps: 1 };
+    candidates.push({ first, state: result.state });
+    if (candidates.length >= 6) break;
+  }
+
+  for (const candidate of candidates) {
+    if (budget.exhausted) return null;
+    const continuationState = { ...candidate.state, _witness: null };
+    let continuationRow = null;
+    let continuationRng = continuationState._rng;
+    if (!(state.skipNextRise && !candidate.state.skipNextRise)) {
+      const random = createRandom(continuationState._rng);
+      continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, continuationState._trialColor ?? continuationState.palette[0]);
+      continuationRng = random.state;
+      continuationState.nextRow = continuationRow;
+      continuationState.nextRowKind = 'regular';
+      continuationState._rng = continuationRng;
+    }
+
+    const secondActions = legalTrialActions(continuationState, budget, 16);
+    for (const action of secondActions) {
+      if (budget.transitions >= budget.transitionLimit) { budget.exhausted = true; break; }
+      budget.transitions += 1;
+      const result = simulateTrialAction(continuationState, action);
+      if (result.state.status === 'playing' && result.state.score > startingScore) {
+        return {
+          first: candidate.first,
+          steps: 2,
+          continuationRow: continuationRow ? copyRow(continuationRow) : null,
+          continuationRng,
+          continuationKind: 'regular',
+        };
+      }
+    }
+    if (budget.exhausted) return null;
+  }
+  return null;
+}
+
+function makeTrialSearchBudget(transitionLimit, previewLimit, searchLimit = previewLimit * 2) {
+  return { transitions: 0, transitionLimit, previewChecks: 0, previewLimit, searchStates: 0, searchLimit, exhausted: false };
+}
+
+function selectTrialPreview(state, random) {
+  const incomingTurn = state.turn + 1;
+  const rootSeed = random.state;
+  const baseColor = state._trialColor ?? state.palette[0];
+  const fallbackRow = generateTrialRow(state.cols, state.palette, random, incomingTurn, state.score, baseColor);
+  const attemptEasy = random() < easySelectionChance(state.score);
+  const fallbackRng = random.state;
+  if (!attemptEasy) return { row: fallbackRow, kind: 'regular', skipNextRise: false, witness: null, rngState: fallbackRng };
+
+  const poolBudget = makeTrialSearchBudget(0, 3200, 7000);
+  const firstActionPool = legalTrialActions(state, poolBudget, 32);
+  if (!firstActionPool.length) return { row: fallbackRow, kind: 'regular', skipNextRise: false, witness: null, rngState: fallbackRng };
+
+  const regularBudget = makeTrialSearchBudget(220, 2600, 5000);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let row = fallbackRow;
+    let candidateRng = fallbackRng;
+    if (attempt > 0) {
+      const candidateRandom = createRandom((rootSeed ^ Math.imul(attempt + 3, 0x9e3779b1)) >>> 0);
+      row = generateTrialRow(state.cols, state.palette, candidateRandom, incomingTurn, state.score, baseColor);
+      candidateRng = candidateRandom.state;
+    }
+    const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'regular', skipNextRise: false, _witness: null, _rng: candidateRng };
+    const witness = findTrialWitness(candidate, regularBudget, firstActionPool);
+    if (witness) return { row, kind: 'regular', skipNextRise: false, witness: witness.steps === 2 ? witness : null, rngState: candidateRng };
+    if (regularBudget.exhausted) break;
+  }
+
+  if (state.score < 1000) {
+    const masks = rescueGapMasks(state);
+    const rescueBudget = makeTrialSearchBudget(240, 3000, 5500);
+    for (const [index, { gaps }] of masks.slice(0, 24).entries()) {
+      const candidateRandom = createRandom((rootSeed ^ Math.imul(index + 101, 0x85ebca6b)) >>> 0);
+      const row = buildRescueRow(state.cols, state.palette, gaps, candidateRandom, incomingTurn, state.score, baseColor);
+      const candidateRng = candidateRandom.state;
+      const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'rescue', skipNextRise: false, _witness: null, _rng: candidateRng };
+      const witness = findTrialWitness(candidate, rescueBudget, firstActionPool);
+      if (witness) return { row, kind: 'rescue', skipNextRise: false, witness: witness.steps === 2 ? witness : null, rngState: candidateRng };
+      if (rescueBudget.exhausted) break;
+    }
+  }
+
+  if (state.score < 1000 && !state.skipRiseUsed) {
+    const candidate = { ...state, nextRow: copyRow(fallbackRow), nextRowKind: 'regular', skipNextRise: true, _witness: null, _rng: fallbackRng };
+    const skipBudget = makeTrialSearchBudget(180, 2400, 4500);
+    const witness = findTrialWitness(candidate, skipBudget, firstActionPool);
+    if (witness) return { row: fallbackRow, kind: 'regular', skipNextRise: true, witness: null, rngState: fallbackRng };
+  }
+  return { row: fallbackRow, kind: 'regular', skipNextRise: false, witness: null, rngState: fallbackRng };
+}
+
+export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE, trial = false } = {}) {
   if (!Number.isInteger(cols) || cols < 4 || !Number.isInteger(rows) || rows < 4) {
     throw new RangeError('cols and rows must be integers of at least 4');
   }
@@ -389,11 +683,14 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
 
   const normalizedSeed = seed >>> 0;
   const random = createRandom(normalizedSeed);
+  const trialEnabled = trial === true;
+  const trialColor = trialEnabled ? palette[Math.floor(random() * palette.length)] : null;
+  const startPalette = trialEnabled ? [trialColor] : palette;
   let pieces = [];
   let idCounter = 1;
 
   for (let attempt = 0; attempt < 32; attempt += 1) {
-    const generated = generateStartPieces(cols, rows, palette, random);
+    const generated = generateStartPieces(cols, rows, startPalette, random);
     pieces = generated.map((piece) => ({ ...piece, id: `p${idCounter++}` }));
     const temporary = { cols, rows, pieces, status: 'playing' };
     pieces = settle(pieces, rows, []);
@@ -401,35 +698,51 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
     pieces = [];
   }
 
-  if (!pieces.length) pieces = fallbackStart(cols, rows, palette);
+  if (!pieces.length) pieces = fallbackStart(cols, rows, startPalette);
 
-  const nextRow = generateRow(cols, palette, random);
-  return {
+  const initialState = {
     cols,
     rows,
     palette: [...palette],
     pieces,
-    nextRow,
+    nextRow: [],
     score: 0,
     turn: 0,
     status: 'playing',
+    trial: trialEnabled,
+    skipNextRise: false,
+    skipRiseUsed: false,
+    nextRowKind: 'regular',
+    _trialColor: trialColor,
     _rng: random.state,
     _nextId: Math.max(idCounter, pieces.length + 1),
   };
+  if (!trialEnabled) {
+    initialState.nextRow = generateRow(cols, palette, random);
+    initialState._rng = random.state;
+    return initialState;
+  }
+  const selection = selectTrialPreview(initialState, random);
+  initialState.nextRow = selection.row;
+  initialState.nextRowKind = selection.kind;
+  initialState.skipNextRise = selection.skipNextRise;
+  initialState._witness = selection.witness;
+  initialState._rng = selection.rngState;
+  return initialState;
 }
 
 function failedMutation(state, reason) {
   return { state, events: [], changed: false, reason };
 }
 
-function finalizeMove(state, pieceId, preview, moveEvent) {
+function finalizeMove(state, pieceId, preview, moveEvent, { recordEvents = true, prepareNext = true } = {}) {
   const original = findPiece(state, pieceId);
   const moved = {
     ...clonePiece(original),
     cells: preview.cells.map(cloneCell),
     frame: cloneFrame(preview.frame),
   };
-  const events = [];
+  const events = recordEvents ? [] : null;
   const startingPieces = state.pieces.map((piece) => piece.id === pieceId ? moved : clonePiece(piece));
   addSnapshotEvent(events, moveEvent, startingPieces);
   const idFactory = makeIdFactory(state._nextId ?? 1);
@@ -445,7 +758,19 @@ function finalizeMove(state, pieceId, preview, moveEvent) {
   if (nextState.pieces.some((piece) => piece.cells.some((cell) => cell.y === 0))) {
     nextState.status = 'gameover';
     addSnapshotEvent(events, { type: 'gameover', reason: 'top-overflow' }, nextState.pieces);
-    return { state: nextState, events, changed: true, reason: 'top-overflow' };
+    return { state: nextState, events: events ?? [], changed: true, reason: 'top-overflow' };
+  }
+
+  if (state.trial && state.skipNextRise) {
+    nextState.skipNextRise = false;
+    nextState.skipRiseUsed = true;
+    nextState._witness = null;
+    if (topOccupied(nextState.pieces)) {
+      nextState.status = 'gameover';
+      addSnapshotEvent(events, { type: 'gameover', reason: 'top-row' }, nextState.pieces);
+      return { state: nextState, events: events ?? [], changed: true, reason: 'top-row' };
+    }
+    return { state: nextState, events: events ?? [], changed: true, reason: null };
   }
 
   nextState.pieces = nextState.pieces.map((piece) => ({
@@ -468,10 +793,38 @@ function finalizeMove(state, pieceId, preview, moveEvent) {
   nextState.pieces = postRisePhysics.pieces;
   nextState.score += postRisePhysics.score;
   nextState._nextId = postRiseIdFactory.value();
-  const random = createRandom(state._rng);
-  nextState.nextRow = generateRow(state.cols, state.palette, random);
-  nextState._rng = random.state;
-  return { state: nextState, events, changed: true, reason: null };
+  if (state.trial && topOccupied(nextState.pieces)) {
+    nextState.status = 'gameover';
+    addSnapshotEvent(events, { type: 'gameover', reason: 'top-row' }, nextState.pieces);
+    return { state: nextState, events: events ?? [], changed: true, reason: 'top-row' };
+  }
+
+  if (prepareNext) {
+    const witness = state.trial ? state._witness : null;
+    const currentSignature = actionSignature(moveEvent.type, pieceId, moveEvent.direction, preview.cells);
+    if (witness && signaturesMatch(witness.first, currentSignature) && witness.continuationRow) {
+      nextState.nextRow = copyRow(witness.continuationRow);
+      nextState.nextRowKind = witness.continuationKind ?? 'regular';
+      nextState._rng = witness.continuationRng;
+      nextState._witness = null;
+    } else {
+      nextState._witness = null;
+      const random = createRandom(state._rng);
+      if (state.trial) {
+        const selection = selectTrialPreview(nextState, random);
+        nextState.nextRow = selection.row;
+        nextState.nextRowKind = selection.kind;
+        nextState.skipNextRise = selection.skipNextRise;
+        nextState._witness = selection.witness;
+        nextState._rng = selection.rngState;
+      } else {
+        nextState.nextRow = generateRow(state.cols, state.palette, random);
+        nextState.nextRowKind = 'regular';
+        nextState._rng = random.state;
+      }
+    }
+  }
+  return { state: nextState, events: events ?? [], changed: true, reason: null };
 }
 
 export function movePieceAlongPath(state, pieceId, path) {
