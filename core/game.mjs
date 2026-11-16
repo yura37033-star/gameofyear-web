@@ -1,6 +1,9 @@
 import { createRandom, generateRow, generateStartPieces } from './generator.mjs';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
+export const COLOR_DEBUT_SCORE = 3000;
+const COLOR_DEBUT_ROWS = 2;
+const DROUGHT_RESCUE_TURNS = 6;
 
 const cloneCell = ({ x, y }) => ({ x, y });
 const cloneFrame = ({ x, y, size }) => ({ x, y, size });
@@ -393,8 +396,9 @@ function easySelectionChance(score) {
   return (2000 - score) / 1000;
 }
 
-function generateTrialRow(cols, palette, random, incomingTurn, score, baseColor) {
+function generateTrialRow(cols, palette, random, incomingTurn, score, baseColor, forcedColor = null) {
   const row = generateRow(cols, palette, random);
+  if (forcedColor) return row.map((segment) => ({ ...segment, color: forcedColor }));
   const chance = secondColorChance(score, incomingTurn);
   for (const segment of row) {
     segment.color = baseColor;
@@ -403,7 +407,74 @@ function generateTrialRow(cols, palette, random, incomingTurn, score, baseColor)
       if (alternatives.length) segment.color = alternatives[Math.floor(random() * alternatives.length)];
     }
   }
+  if (score >= COLOR_DEBUT_SCORE && row.length) {
+    const rowColor = row[0].color;
+    return row.map((segment) => ({ ...segment, color: rowColor }));
+  }
   return row;
+}
+
+function chooseCompatibleGaps(state, row, seed) {
+  const rowColor = row[0]?.color;
+  if (!row.length || row.some((segment) => segment.color !== rowColor)) return row;
+  const gapCount = state.cols - row.reduce((total, segment) => total + segment.length, 0);
+  const shifted = state.pieces.map((item) => ({
+    ...item,
+    cells: translateCells(item.cells, 0, -1),
+    frame: { ...item.frame, y: item.frame.y - 1 },
+  }));
+  const foreignBottomCount = (segments) => {
+    const inserted = segments.map((segment, index) => {
+      const cells = Array.from({ length: segment.length }, (_, x) => ({ x: segment.x + x, y: state.rows - 1 }));
+      return { id: `compat-${index}`, color: rowColor, cells, frame: makeFrame(cells) };
+    });
+    let count = 0;
+    for (const item of settle([...shifted, ...inserted], state.rows, null)) {
+      if (item.color !== rowColor) count += item.cells.filter((cell) => cell.y === state.rows - 1).length;
+    }
+    return count;
+  };
+
+  let best = row;
+  let lowestForeign = foreignBottomCount(row);
+  if (!lowestForeign) return row;
+  const mirrored = row.map((segment) => ({
+    ...segment,
+    x: state.cols - segment.x - segment.length,
+  })).reverse();
+  const alternatives = [mirrored];
+  const layoutRandom = createRandom((seed ^ 0x9e3779b1) >>> 0);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const gaps = Array(row.length + 1).fill(0);
+    for (let gap = 0; gap < gapCount; gap += 1) gaps[Math.floor(layoutRandom() * gaps.length)] += 1;
+    let position = 0;
+    alternatives.push(row.map((segment, index) => {
+      position += gaps[index];
+      const x = position;
+      position += segment.length;
+      return { ...segment, x };
+    }));
+  }
+  for (const candidate of alternatives) {
+    const foreignCount = foreignBottomCount(candidate);
+    if (foreignCount < lowestForeign) {
+      best = candidate;
+      lowestForeign = foreignCount;
+    }
+    if (!lowestForeign) break;
+  }
+  return best;
+}
+
+function trialRowColorMode(state, debutCount = state._debutRowsReserved ?? 0) {
+  const baseColor = state._trialColor ?? state.palette[0];
+  const secondColor = state.palette.find((color) => color !== baseColor) ?? state.palette[1];
+  const forcedSecondColor = state.score >= COLOR_DEBUT_SCORE && debutCount < COLOR_DEBUT_ROWS ? secondColor : null;
+  return {
+    baseColor,
+    forcedSecondColor,
+    forcedRowColor: forcedSecondColor ?? (state.score < COLOR_DEBUT_SCORE ? baseColor : null),
+  };
 }
 
 function copyRow(row) {
@@ -414,6 +485,16 @@ function stackHeight(pieces, rows) {
   let top = rows;
   for (const piece of pieces) for (const cell of piece.cells) top = Math.min(top, cell.y);
   return rows - top;
+}
+
+function updateDroughtCounters(nextState, startingState) {
+  if (nextState.score > startingState.score) {
+    nextState._droughtTurns = 0;
+    nextState._droughtRescueIssued = false;
+  } else {
+    nextState._droughtTurns = Math.min(DROUGHT_RESCUE_TURNS, (startingState._droughtTurns ?? 0) + 1);
+    nextState._droughtRescueIssued = startingState._droughtRescueIssued ?? false;
+  }
 }
 
 // Trial doubling: copies every piece of the single occupied row one row higher.
@@ -463,16 +544,16 @@ function nextWitnessStep(witness, matchesFirst) {
   return { first: witness.second, steps: 1 };
 }
 
-function buildRescueRow(cols, palette, gapMask, random, incomingTurn, score, baseColor) {
+function buildRescueRow(cols, palette, gapMask, random, incomingTurn, score, baseColor, forcedColor = null) {
   const gaps = new Set(gapMask);
   const segments = [];
   for (let x = 0; x < cols;) {
     if (gaps.has(x)) { x += 1; continue; }
     const end = (() => { let next = x; while (next < cols && !gaps.has(next)) next += 1; return next; })();
     const length = Math.min(4, end - x);
-    let color = baseColor;
+    let color = forcedColor ?? baseColor;
     const chance = secondColorChance(score, incomingTurn);
-    if (chance && palette.length > 1 && random() < chance) {
+    if (!forcedColor && chance && palette.length > 1 && random() < chance) {
       const alternatives = [...new Set(palette.filter((candidate) => candidate !== baseColor))];
       if (alternatives.length) color = alternatives[Math.floor(random() * alternatives.length)];
     }
@@ -674,8 +755,14 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
       continuationMode = 'reserved';
     } else {
       const random = createRandom(continuationState._rng);
-      continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, continuationState._trialColor ?? continuationState.palette[0]);
+      const debutCount = continuationState._debutRowsReserved ?? 0;
+      const { baseColor, forcedSecondColor, forcedRowColor } = trialRowColorMode(continuationState, debutCount);
+      continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, baseColor, forcedRowColor);
+      if (continuationState.score >= COLOR_DEBUT_SCORE) {
+        continuationRow = chooseCompatibleGaps(continuationState, continuationRow, random.state);
+      }
       continuationRng = random.state;
+      if (forcedSecondColor) continuationState._debutRowsReserved = debutCount + 1;
       continuationState.nextRow = continuationRow;
       continuationState.nextRowKind = 'regular';
       continuationState._rng = continuationRng;
@@ -696,6 +783,7 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
           continuationRng,
           continuationKind,
           continuationMode,
+          continuationDebutRowsReserved: continuationState._debutRowsReserved ?? 0,
         };
       }
     }
@@ -705,7 +793,7 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
 }
 
 function findHeldWitness(state) {
-  if (!state.trial || state.status !== 'playing' || state.score >= HINT_SCORE_LIMIT) return null;
+  if (!state.trial || state.status !== 'playing' || state.score >= HELD_WITNESS_SCORE_LIMIT) return null;
   const poolBudget = makeTrialSearchBudget(0, 900, 1800);
   const firstActions = legalTrialActions(state, poolBudget, 48);
   if (!firstActions.length) return null;
@@ -724,15 +812,25 @@ function makeTrialSearchBudget(transitionLimit, previewLimit, searchLimit = prev
 function selectTrialPreview(state, random) {
   const incomingTurn = state.turn + 1;
   const rootSeed = random.state;
-  const baseColor = state._trialColor ?? state.palette[0];
-  const fallbackRow = generateTrialRow(state.cols, state.palette, random, incomingTurn, state.score, baseColor);
+  const debutCount = state._debutRowsReserved ?? 0;
+  const { baseColor, forcedSecondColor, forcedRowColor } = trialRowColorMode(state, debutCount);
+  let fallbackRow = generateTrialRow(state.cols, state.palette, random, incomingTurn, state.score, baseColor, forcedRowColor);
+  if (state.score >= COLOR_DEBUT_SCORE) fallbackRow = chooseCompatibleGaps(state, fallbackRow, rootSeed);
   const attemptEasy = random() < easySelectionChance(state.score);
   const fallbackRng = random.state;
-  if (!attemptEasy) return { row: fallbackRow, kind: 'regular', skipNextRise: false, witness: null, rngState: fallbackRng };
+  const nearCeiling = state.rows - stackHeight(state.pieces, state.rows) <= 2;
+  const droughtDue = (state._droughtTurns ?? 0) >= DROUGHT_RESCUE_TURNS && !state._droughtRescueIssued;
+  const shouldSearch = attemptEasy || nearCeiling || droughtDue;
+  const finish = (row, kind, skipNextRise, witness, rngState, rescued = false) => ({
+    row, kind, skipNextRise, witness, rngState,
+    debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0),
+    droughtRescueIssued: (state._droughtRescueIssued ?? false) || (rescued && droughtDue),
+  });
+  if (!shouldSearch) return finish(fallbackRow, 'regular', false, null, fallbackRng);
 
   const poolBudget = makeTrialSearchBudget(0, 3200, 7000);
   const firstActionPool = legalTrialActions(state, poolBudget, 32);
-  if (!firstActionPool.length) return { row: fallbackRow, kind: 'regular', skipNextRise: false, witness: null, rngState: fallbackRng };
+  if (!firstActionPool.length) return finish(fallbackRow, 'regular', false, null, fallbackRng);
 
   const regularBudget = makeTrialSearchBudget(220, 2600, 5000);
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -740,36 +838,37 @@ function selectTrialPreview(state, random) {
     let candidateRng = fallbackRng;
     if (attempt > 0) {
       const candidateRandom = createRandom((rootSeed ^ Math.imul(attempt + 3, 0x9e3779b1)) >>> 0);
-      row = generateTrialRow(state.cols, state.palette, candidateRandom, incomingTurn, state.score, baseColor);
+      row = generateTrialRow(state.cols, state.palette, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor);
+      if (state.score >= COLOR_DEBUT_SCORE) row = chooseCompatibleGaps(state, row, candidateRandom.state);
       candidateRng = candidateRandom.state;
     }
-    const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'regular', skipNextRise: false, _witness: null, _rng: candidateRng };
+    const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'regular', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0) };
     const witness = findTrialWitness(candidate, regularBudget, firstActionPool);
-    if (witness) return { row, kind: 'regular', skipNextRise: false, witness: witness.steps === 2 ? witness : null, rngState: candidateRng };
+    if (witness) return finish(row, 'regular', false, witness, candidateRng);
     if (regularBudget.exhausted) break;
   }
 
-  if (state.score < 1000) {
+  if (nearCeiling || droughtDue || (state.score < 1000 && attemptEasy)) {
     const masks = rescueGapMasks(state);
     const rescueBudget = makeTrialSearchBudget(240, 3000, 5500);
     for (const [index, { gaps }] of masks.slice(0, 24).entries()) {
       const candidateRandom = createRandom((rootSeed ^ Math.imul(index + 101, 0x85ebca6b)) >>> 0);
-      const row = buildRescueRow(state.cols, state.palette, gaps, candidateRandom, incomingTurn, state.score, baseColor);
+      const row = buildRescueRow(state.cols, state.palette, gaps, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor);
       const candidateRng = candidateRandom.state;
-      const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'rescue', skipNextRise: false, _witness: null, _rng: candidateRng };
+      const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'rescue', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0) };
       const witness = findTrialWitness(candidate, rescueBudget, firstActionPool);
-      if (witness) return { row, kind: 'rescue', skipNextRise: false, witness: witness.steps === 2 ? witness : null, rngState: candidateRng };
+      if (witness) return finish(row, 'rescue', false, witness, candidateRng, true);
       if (rescueBudget.exhausted) break;
     }
   }
 
-  if (state.score < 1000 && !state.skipRiseUsed) {
+  if (attemptEasy && state.score < 1000 && !state.skipRiseUsed) {
     const candidate = { ...state, nextRow: copyRow(fallbackRow), nextRowKind: 'regular', skipNextRise: true, _witness: null, _rng: fallbackRng };
     const skipBudget = makeTrialSearchBudget(180, 2400, 4500);
     const witness = findTrialWitness(candidate, skipBudget, firstActionPool);
-    if (witness) return { row: fallbackRow, kind: 'regular', skipNextRise: true, witness, rngState: fallbackRng };
+    if (witness) return finish(fallbackRow, 'regular', true, witness, fallbackRng);
   }
-  return { row: fallbackRow, kind: 'regular', skipNextRise: false, witness: null, rngState: fallbackRng };
+  return finish(fallbackRow, 'regular', false, null, fallbackRng);
 }
 
 export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE, trial = false } = {}) {
@@ -813,6 +912,11 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
     skipRiseUsed: false,
     nextRowKind: 'regular',
     _trialColor: trialColor,
+    ...(trialEnabled ? {
+      _debutRowsReserved: 0,
+      _droughtTurns: 0,
+      _droughtRescueIssued: false,
+    } : {}),
     _rng: random.state,
     _nextId: Math.max(idCounter, pieces.length + 1),
   };
@@ -825,6 +929,8 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
   initialState.nextRow = selection.row;
   initialState.nextRowKind = selection.kind;
   initialState.skipNextRise = selection.skipNextRise;
+  initialState._debutRowsReserved = selection.debutRowsReserved;
+  initialState._droughtRescueIssued = selection.droughtRescueIssued;
   initialState._witness = selection.witness;
   initialState._rng = selection.rngState;
   return initialState;
@@ -857,6 +963,7 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
     turn: state.turn + 1,
     _nextId: idFactory.value(),
   };
+  if (state.trial) updateDroughtCounters(nextState, state);
   const witness = prepareNext && state.trial ? state._witness : null;
   const witnessMatches = Boolean(witness?.first && signaturesMatch(
     witness.first,
@@ -886,6 +993,12 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
       return { state: nextState, events: events ?? [], changed: true, reason: 'top-row', doubled: 'replace' };
     }
     return { state: nextState, events: events ?? [], changed: true, reason: null, doubled: 'replace' };
+  }
+
+  if (state.trial && physics.score > 0 && settledStack >= 2) {
+    nextState._witness = followingWitness
+      ?? (prepareNext && refreshHeldWitness ? findHeldWitness(nextState) : null);
+    return { state: nextState, events: events ?? [], changed: true, reason: null };
   }
 
   if (state.trial && state.skipNextRise && settledStack !== 0) {
@@ -923,10 +1036,22 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
     nextState.pieces = postRisePhysics.pieces;
     nextState.score += postRisePhysics.score;
     nextState._nextId = postRiseIdFactory.value();
+    if (state.trial) updateDroughtCounters(nextState, state);
     if (state.trial && stackHeight(nextState.pieces, state.rows) === 1) {
       const doubleIds = makeIdFactory(nextState._nextId);
       doubleSingleRow(nextState, doubleIds.next, events);
       nextState._nextId = doubleIds.value();
+      doubled = 'after-rise';
+    }
+    if (state.trial && nextState.pieces.length === 0) {
+      for (const segment of row) {
+        const cells = Array.from({ length: segment.length }, (_, index) => ({ x: segment.x + index, y: state.rows - 1 }));
+        nextState.pieces.push({ id: `p${nextState._nextId++}`, color: segment.color, cells, frame: makeFrame(cells) });
+      }
+      addSnapshotEvent(events, { type: 'refill', rows: 1 }, nextState.pieces);
+      const refillIds = makeIdFactory(nextState._nextId);
+      doubleSingleRow(nextState, refillIds.next, events);
+      nextState._nextId = refillIds.value();
       doubled = 'after-rise';
     }
     if (state.trial && topOccupied(nextState.pieces)) {
@@ -946,6 +1071,9 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
       nextState.nextRowKind = witness.continuationKind ?? 'regular';
       nextState._rng = witness.continuationRng;
       nextState._witness = nextWitnessStep(witness, true);
+      if (state.trial && Number.isInteger(witness.continuationDebutRowsReserved)) {
+        nextState._debutRowsReserved = witness.continuationDebutRowsReserved;
+      }
     } else {
       nextState._witness = null;
       const random = createRandom(rngSeed);
@@ -956,6 +1084,8 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
         nextState.skipNextRise = selection.skipNextRise;
         nextState._witness = selection.witness;
         nextState._rng = selection.rngState;
+        nextState._debutRowsReserved = selection.debutRowsReserved;
+        nextState._droughtRescueIssued = selection.droughtRescueIssued;
       } else {
         nextState.nextRow = generateRow(state.cols, state.palette, random);
         nextState.nextRowKind = 'regular';
@@ -966,12 +1096,6 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
 
   if (prepareNext) {
     preparePreview(state._rng, witness, witnessMatches);
-    // Rare: the post-rise cascade emptied the whole board. Insert the fresh preview too
-    // (it is doubled by the same rule) so the next turn has pieces to play.
-    if (state.trial && nextState.pieces.length === 0) {
-      if (!rise(nextState.nextRow)) return gameOver();
-      preparePreview(nextState._rng, null, false);
-    }
   }
   return { state: nextState, events: events ?? [], changed: true, reason: null, ...(doubled ? { doubled } : {}) };
 }
@@ -1005,7 +1129,7 @@ export function rotatePiece(state, pieceId, direction = 'clockwise') {
 // preparation when needed. The live board and its generator remain untouched.
 // The action pool and the replay budgets bound the work deterministically.
 // ---------------------------------------------------------------------------
-export const HINT_SCORE_LIMIT = 1000;
+const HELD_WITNESS_SCORE_LIMIT = 1000;
 const HINT_POOL_SIZE = 96;
 const HINT_SIMULATION_LIMIT = 160;
 const HINT_REPLAY_LIMIT = 4;
@@ -1065,7 +1189,7 @@ function actionFromSignature(state, signature) {
 }
 
 export function suggestAction(state) {
-  if (!state || state.trial !== true || state.status !== 'playing' || !(state.score < HINT_SCORE_LIMIT)) return null;
+  if (!state || state.trial !== true || state.status !== 'playing') return null;
 
   const pool = legalTrialActions(state, makeTrialSearchBudget(0, 3200, 7000), HINT_POOL_SIZE);
 

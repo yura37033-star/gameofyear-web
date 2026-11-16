@@ -3,7 +3,7 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'b1-37b1194';
+export const BUILD_ID = 'b1-8c5169e';
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones
 
 export function createJournal() {
@@ -45,7 +45,8 @@ function colorCount(state) {
 
 export function startGameLog(journal, { seed, mode, startedAt, startedLabel, device, build = BUILD_ID } = {}) {
   const previous = latestGame(journal);
-  if (previous && !previous.end) previous.end = { reason: 'abandoned', endedAt: startedAt ?? null, score: null };
+  if (previous && !previous.end && previous.turns.length === 0) journal.games.pop(); // an untouched game is not worth a journal slot
+  else if (previous && !previous.end) previous.end = { reason: 'abandoned', endedAt: startedAt ?? null, score: null };
   const game = {
     build: String(build), seed: seed >>> 0, mode: String(mode ?? ''), startedAt: startedAt ?? null,
     startedLabel: startedLabel == null ? null : String(startedLabel), device: String(device ?? 'unknown'),
@@ -179,4 +180,84 @@ export function formatAll(journal) {
   const games = [...journal.games].reverse();
   if (!games.length) return `${LEGEND}\n`;
   return `${LEGEND}\n${games.map((game) => formatReport(game, { legend: false })).join('\n')}`;
+}
+
+// --- Persistence (P1): the journal is stored as primitives only. ---
+export const JOURNAL_SCHEMA_VERSION = 1;
+export const MAX_JOURNAL_TURNS = 1500; // per game; a typical game has 50-300
+const TURN_INTEGERS = ['n', 'pathLength', 'pieceLength', 'ms', 'score', 'gain', 'rows', 'hBefore', 'hAfter', 'colors', 'hints'];
+
+function isCount(value, max = 1e9) { return Number.isSafeInteger(value) && value >= 0 && value <= max; }
+function isText(value, max) { return typeof value === 'string' && value.length <= max; }
+function onlyKeys(object, keys) {
+  return object !== null && typeof object === 'object' && !Array.isArray(object)
+    && Object.keys(object).length === keys.length && keys.every((key) => Object.hasOwn(object, key));
+}
+
+function importTurn(turn) {
+  const keys = [...TURN_INTEGERS, 'kind', 'direction', 'rise', 'doubled', 'pause', 'rescueInserted', 'next', 'followed', 'over'];
+  if (!onlyKeys(turn, keys)) return null;
+  if (!TURN_INTEGERS.every((key) => isCount(turn[key]))) return null;
+  if (turn.kind !== 'move' && turn.kind !== 'rotate') return null;
+  if (turn.direction !== null && turn.direction !== 'cw' && turn.direction !== 'ccw') return null;
+  if (typeof turn.rise !== 'boolean' || typeof turn.pause !== 'boolean' || typeof turn.rescueInserted !== 'boolean' || typeof turn.followed !== 'boolean') return null;
+  if (turn.doubled !== null && turn.doubled !== 'after-rise' && turn.doubled !== 'replace') return null;
+  if (turn.next !== 'reg' && turn.next !== 'res') return null;
+  if (turn.over !== null && !isText(turn.over, 24)) return null;
+  const copy = {};
+  for (const key of keys) copy[key] = turn[key];
+  return copy;
+}
+
+function importGame(game) {
+  if (!onlyKeys(game, ['build', 'seed', 'mode', 'startedAt', 'startedLabel', 'device', 'turns', 'end'])) return null;
+  if (!isText(game.build, 40) || !isText(game.mode, 40) || !isText(game.device, 80)) return null;
+  if (!Number.isSafeInteger(game.seed) || game.seed < 0 || game.seed > 0xFFFFFFFF) return null;
+  if (game.startedAt !== null && !(Number.isSafeInteger(game.startedAt) && game.startedAt >= 0)) return null;
+  if (game.startedLabel !== null && !isText(game.startedLabel, 40)) return null;
+  if (!Array.isArray(game.turns) || game.turns.length > MAX_JOURNAL_TURNS) return null;
+  const turns = [];
+  for (const turn of game.turns) {
+    const imported = importTurn(turn);
+    if (!imported) return null;
+    turns.push(imported);
+  }
+  let end = null;
+  if (game.end !== null) {
+    if (!onlyKeys(game.end, ['reason', 'endedAt', 'score']) || !isText(game.end.reason, 24)) return null;
+    if (game.end.endedAt !== null && !(Number.isSafeInteger(game.end.endedAt) && game.end.endedAt >= 0)) return null;
+    if (game.end.score !== null && !isCount(game.end.score)) return null;
+    end = { reason: game.end.reason, endedAt: game.end.endedAt, score: game.end.score };
+  }
+  return {
+    build: game.build, seed: game.seed, mode: game.mode, startedAt: game.startedAt, startedLabel: game.startedLabel,
+    device: game.device, turns, end,
+  };
+}
+
+// Plain JSON-safe copy of the newest `maxGames` games (oldest first). Never throws on a well-formed journal.
+export function exportJournal(journal, { maxGames = JOURNAL_CAPACITY } = {}) {
+  const keep = Math.max(0, Math.min(JOURNAL_CAPACITY, maxGames));
+  const games = keep === 0 ? [] : journal.games.slice(-keep);
+  return { version: JOURNAL_SCHEMA_VERSION, games: JSON.parse(JSON.stringify(games)) };
+}
+
+// { ok:true, journal } or { ok:false, reason }. A game still in progress (end === null) is kept
+// open, so recordTurn / finishGameLog keep appending to it after a restore.
+export function importJournal(value) {
+  try {
+    if (!onlyKeys(value, ['version', 'games']) || value.version !== JOURNAL_SCHEMA_VERSION) return { ok: false, reason: 'version' };
+    if (!Array.isArray(value.games) || value.games.length > JOURNAL_CAPACITY) return { ok: false, reason: 'games' };
+    const journal = createJournal();
+    for (const game of value.games) {
+      const imported = importGame(game);
+      if (!imported) return { ok: false, reason: 'game' };
+      journal.games.push(imported);
+    }
+    // Only the newest game can still be open.
+    if (journal.games.slice(0, -1).some((game) => game.end === null)) return { ok: false, reason: 'open-game' };
+    return { ok: true, journal };
+  } catch {
+    return { ok: false, reason: 'invalid' };
+  }
 }

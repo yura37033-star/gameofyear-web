@@ -42,6 +42,9 @@
                 <strong id="finalScore">0</strong>
                 <span class="label">НАБРАНО ОЧОК</span>
                 <button id="retryButton" class="primary-button" type="button">Ще партію <span>↗</span></button>
+                <button id="copyResultButton" class="secondary-button" type="button" aria-label="Скопіювати результати партії">Скопіювати результати</button>
+                <textarea id="copyResultText" class="copy-text" readonly hidden rows="3" aria-label="Текст результатів для ручного копіювання"></textarea>
+                <p id="copyResultStatus" class="copy-status" role="status" aria-live="polite"></p>
               </div>
             </div>
             <div id="gain" class="score-gain" aria-hidden="true"></div>
@@ -76,6 +79,9 @@
       <li><b>Збирай повні ряди одного кольору</b><p>Після підйому старі фігури можуть впасти у прогалини нового ряду. Кожен повний одноколірний ряд зникає й дає 100 очок.</p></li>
     </ol>
     <div class="help-tip">Партія завершується, якщо після падіння й усіх очищень верхній ряд лишився зайнятим. До 1000 очок гра може підібрати рятувальний ряд або раз дати хід без підйому.</div>
+    <button id="copyJournalButton" class="secondary-button" type="button" aria-label="Скопіювати журнал останніх партій">Скопіювати журнал партій</button>
+    <textarea id="copyJournalText" class="copy-text" readonly hidden rows="5" aria-label="Текст журналу для ручного копіювання"></textarea>
+    <p id="copyJournalStatus" class="copy-status" role="status" aria-live="polite"></p>
     <button id="playButton" class="primary-button" type="button">До гри <span>→</span></button>
   </dialog>
   <script type="module" src="./main.mjs"></script>
