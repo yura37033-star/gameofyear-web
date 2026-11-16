@@ -133,7 +133,7 @@ export function summarizeGame(game) {
 export const LEGEND = 'L n move sec +gain rN h<before>><after> events next cN HN[f] | '
   + 'move: M<cells incl. start>/<pieceLen> or Rcw|Rccw; sec: think time; rN: rows cleared; h: stack; '
   + 'events (+ joined): U rise, Da/Dr double after/instead of rise, P pause, X game over; '
-  + 'next: reg|res(cue) row, +1|2 verified path (none: no path); cN: colours; HN: hints pressed, f: first step of last hint followed';
+  + 'next: reg|res(cue) row, +1|2 verified path (none: unknown); cN: colours; HN: hints pressed, f: first step of last hint followed';
 
 function seconds(ms) {
   return (Math.min(ms, 999900) / 1000).toFixed(1);

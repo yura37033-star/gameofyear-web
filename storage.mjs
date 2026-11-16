@@ -5,7 +5,14 @@
 // Operations run strictly in call order (one queue); a snapshot is serialized at call time, so a later save always wins and a stale one can never overwrite it.
 
 export const STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game', journal: 'kr.journal' });
-export const STORAGE_LIMITS = Object.freeze({ 'kr.best': 1024, 'kr.game': 64 * 1024, 'kr.journal': 600 * 1024 });
+export const HAMMER_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.hammer', journal: 'kr.journal.hammer' });
+export const STORAGE_LIMITS = Object.freeze({
+  'kr.best': 1024,
+  'kr.game': 64 * 1024,
+  'kr.journal': 600 * 1024,
+  'kr.game.hammer': 64 * 1024,
+  'kr.journal.hammer': 600 * 1024,
+});
 const PROBE_KEY = 'kr.probe';
 const DEFAULT_LIMIT = 64 * 1024;
 
