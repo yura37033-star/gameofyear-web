@@ -1,6 +1,8 @@
-import { HINT_SCORE_LIMIT, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction } from './core/game.mjs';
+import { COLOR_DEBUT_SCORE, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction } from './core/game.mjs';
 import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs';
-import { BUILD_ID, createJournal, finishGameLog, formatAll, formatReport, latestGame, parseDevice, recordTurn, startGameLog } from './journal.mjs';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTurn, startGameLog } from './journal.mjs';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs';
+import { STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -13,6 +15,7 @@ const rotationButtons = {
 let state, scene = [], displayedRow = [], displayedScore = 0, selectedId = null, drag = null;
 let cell = 28, busy = false, actionEpoch = 0, activePhase = null, rotationTween = null;
 let tween = null, animationFrame = 0, renderRequest = 0;
+let previewTween = null, previewFrame = 0;
 let hintDirection = 'clockwise';
 let suggestion = null, suggestionFrame = 0, hintVisible = true;
 const hintButton = $('hintButton');
@@ -41,6 +44,39 @@ function journalRecord(before, result) {
   journalHints = 0; journalLastHint = null;
   if (result.state.status === 'gameover') finishGameLog(journal, result.state, { endedAt: Date.now() });
 }
+
+// --- Persistence (P1, PERSISTENCE_PLAN.md): the best score, the last game and the journal live in localStorage.
+// Two tabs share one store: the last write wins (no cross-tab merging). Every call is wrapped so storage can never break the game.
+const STORAGE_NOTICE = 'Прогрес цього запуску не збережеться.';
+let best = 0, bestAtStart = 0, recordBase = 0, storageNoticePending = false, storageNoticeShown = false;
+const storage = createStorage({ onUnavailable: () => { if (!storageNoticeShown) { storageNoticeShown = true; storageNoticePending = true; } } });
+function persistSafe(action) { try { return action(); } catch { return null; } }
+function persistGame() {
+  if (state) persistSafe(() => storage.save(STORAGE_KEYS.game, serializeGame(state, { bestAtStart, savedAt: Date.now() })));
+}
+function persistBest() {
+  if (!state || nextBest(best, state.score) === best) return;
+  best = nextBest(best, state.score);
+  // Another tab may have stored a higher record: re-read it and never lower it.
+  persistSafe(() => storage.load(STORAGE_KEYS.best).then((read) => {
+    const parsed = read.ok ? parseBest(read.value) : null;
+    if (parsed?.ok && parsed.score > best) best = parsed.score;
+    storage.save(STORAGE_KEYS.best, serializeBest(best));
+  }).catch(() => {}));
+}
+function persistJournal() {
+  persistSafe(() => {
+    // Fall back to fewer stored games when the whole journal would not fit the size limit.
+    for (const maxGames of [5, 3, 2, 1]) {
+      const record = exportJournal(journal, { maxGames });
+      if (JSON.stringify(record).length <= STORAGE_LIMITS[STORAGE_KEYS.journal] || maxGames === 1) {
+        storage.save(STORAGE_KEYS.journal, record);
+        return;
+      }
+    }
+  });
+}
+function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 function seed() {
   if (globalThis.crypto?.getRandomValues) return crypto.getRandomValues(new Uint32Array(1))[0];
@@ -84,6 +120,7 @@ function resize() {
   setCanvas(nextCanvas, nextCtx, cell * state.cols, cell);
   nextCanvas.parentElement.style.width = `${cell * state.cols}px`;
   render();
+  if (previewTween) drawNextRowCanvas();
 }
 function brighten(hex, amount = 25) {
   if (!/^#[0-9a-f]{6}$/i.test(hex)) return hex;
@@ -174,13 +211,62 @@ function refreshRotationPreviews() {
     if (hints.clockwise || hints.counterclockwise) rotationPreviews.set(item.id, hints);
   }
 }
-function showNextRow() {
+function updateNextRowLabel(kind = state.nextRowKind, skipNextRise = state.skipNextRise) {
   const playing = state.status === 'playing';
-  displayedRow = playing ? state.nextRow : [];
-  const label = state.skipNextRise && playing ? 'Ряд після паузи'
-    : state.nextRowKind === 'rescue' && playing ? 'Рятувальний ряд' : 'Наступний ряд';
+  const label = !playing ? 'Наступний ряд'
+    : skipNextRise ? 'Ряд після паузи'
+      : kind === 'rescue' ? 'Рятувальний ряд' : 'Наступний ряд';
   $('nextRowLabel').textContent = label;
   nextCanvas.setAttribute('aria-label', label);
+}
+function drawNextRowCanvas(now = performance.now()) {
+  nextCtx.clearRect(0, 0, state.cols * cell, cell);
+  for (let x = 0; x < state.cols; x++) {
+    nextCtx.fillStyle = '#192b4380'; nextCtx.beginPath(); roundRectPath(nextCtx, x * cell + 1, 1, cell - 2, cell - 2, 3); nextCtx.fill();
+  }
+  if (!previewTween) {
+    for (const segment of displayedRow) drawBar(nextCtx, segment.x, 0, segment.length, 1, segment.color, .92);
+    return;
+  }
+  const progress = Math.max(0, Math.min(1, (now - previewTween.start) / previewTween.duration));
+  for (const segment of previewTween.from) drawBar(nextCtx, segment.x, 0, segment.length, 1, segment.color, .92 * (1 - progress));
+  for (const segment of previewTween.to) drawBar(nextCtx, segment.x, 0, segment.length, 1, segment.color, .92 * progress);
+}
+function cancelPreviewTransition() {
+  if (previewFrame) cancelAnimationFrame(previewFrame);
+  previewFrame = 0;
+  if (previewTween) displayedRow = previewTween.to;
+  previewTween = null;
+}
+function previewTransitionTick() {
+  previewFrame = 0;
+  if (!previewTween) return;
+  const progress = Math.max(0, Math.min(1, (performance.now() - previewTween.start) / previewTween.duration));
+  drawNextRowCanvas();
+  if (progress < 1) previewFrame = requestAnimationFrame(previewTransitionTick);
+  else previewTween = null;
+}
+function transitionNextRow(row, kind, skipNextRise = false) {
+  cancelPreviewTransition();
+  const from = displayedRow.map((segment) => ({ ...segment }));
+  const to = row.map((segment) => ({ ...segment }));
+  displayedRow = to;
+  updateNextRowLabel(kind, skipNextRise);
+  if (reducedMotion.matches || document.hidden || JSON.stringify(from) === JSON.stringify(to)) {
+    previewTween = null;
+    drawNextRowCanvas();
+    return;
+  }
+  previewTween = { from, to, start: performance.now(), duration: 130 };
+  drawNextRowCanvas();
+  previewFrame = requestAnimationFrame(previewTransitionTick);
+}
+function showNextRow() {
+  cancelPreviewTransition();
+  const playing = state.status === 'playing';
+  displayedRow = playing ? state.nextRow.map((segment) => ({ ...segment })) : [];
+  updateNextRowLabel();
+  drawNextRowCanvas();
 }
 function render() {
   if (!state) return;
@@ -189,7 +275,7 @@ function render() {
   for (const [direction, button] of Object.entries(rotationButtons)) {
     button.disabled = !rotationHints?.[direction];
   }
-  if (!busy) hintVisible = state.trial === true && state.status === 'playing' && state.score < HINT_SCORE_LIMIT;
+  if (!busy) hintVisible = state.trial === true && state.status === 'playing';
   hintButton.classList.toggle('is-off', !hintVisible);
   hintButton.disabled = busy || Boolean(drag) || !hintVisible;
   for (const [direction, button] of Object.entries(rotationButtons)) {
@@ -229,10 +315,10 @@ function render() {
     const hint = rotationHints?.[hintDirection] ?? rotationHints?.clockwise ?? rotationHints?.counterclockwise;
     if (hint) drawHint(hint);
   }
-  nextCtx.clearRect(0, 0, state.cols * cell, cell);
-  for (let x = 0; x < state.cols; x++) { nextCtx.fillStyle = '#192b4380'; nextCtx.beginPath(); roundRectPath(nextCtx, x * cell + 1, 1, cell - 2, cell - 2, 3); nextCtx.fill(); }
-  for (const p of displayedRow) drawBar(nextCtx, p.x, 0, p.length, 1, p.color, .92);
+  if (!previewTween) drawNextRowCanvas();
   $('score').textContent = displayedScore.toLocaleString('uk-UA'); $('turn').textContent = state.turn;
+  $('best').textContent = `Рекорд ${Math.max(recordBase, displayedScore).toLocaleString('uk-UA')}`;
+  $('newRecord').hidden = !(state.status === 'gameover' && isNewRecord(state.score, bestAtStart));
   $('gameOver').hidden = state.status !== 'gameover' || busy;
   $('finalScore').textContent = state.score.toLocaleString('uk-UA');
   board.setAttribute('aria-label', `Поле ${state.cols} на ${state.rows}. Очки: ${displayedScore}. Ходів: ${state.turn}. ${selectedId ? 'Фігуру обрано.' : 'Обери фігуру.'}`);
@@ -247,7 +333,7 @@ function suggestionTick() {
   if (!reducedMotion.matches && !document.hidden) suggestionFrame = requestAnimationFrame(suggestionTick);
 }
 function requestHint() {
-  if (busy || drag || state.status !== 'playing' || !hintVisible) return;
+  if (!state || busy || drag || state.status !== 'playing' || !hintVisible) return;
   const found = suggestAction(state);
   journalHints++; journalLastHint = found && { kind: found.kind, pieceId: found.pieceId, direction: found.direction, offset: found.offset }; // journal
   clearSuggestion();
@@ -282,11 +368,12 @@ function animate(duration, update) {
     animationFrame = requestAnimationFrame(tick);
   });
 }
-function completedMessage(gained = 0, doubled = false) {
+function completedMessage(gained = 0, doubled = false, didRise = true) {
+  if (storageNoticePending && state.status === 'playing') { storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); return; }
   const doubledText = doubled === 'after-rise' ? 'Додано ряд, поле подвоїлось.' : state.skipNextRise ? 'Поле подвоїлось. Наступний хід без підйому.' : 'Поле подвоїлось. Показаний ряд чекає.';
   if (state.status === 'gameover') message('Верхній ряд зайнятий.', 'bad');
   else if (gained && doubled) message(`Прибрано рядів: ${gained / 100} · +${gained}. ${doubledText}`, 'good');
-  else if (gained) message(`Прибрано рядів: ${gained / 100} · +${gained} очок`, 'good');
+  else if (gained) message(`Прибрано рядів: ${gained / 100} · +${gained} очок${didRise ? '' : '. Показаний ряд чекає.'}`, 'good');
   else if (doubled) message(doubledText, 'good');
   else if (state.skipNextRise) message('Наступний хід без підйому.', 'good');
   else if (rotationHintActive()) message(ROTATE_IDLE_HINT);
@@ -298,33 +385,79 @@ function finishPlayback() {
   showNextRow(); refreshRotationPreviews();
   frame.classList.remove('resolve'); completedMessage(); render();
 }
-function startGame() {
+function installState(next, text, restored = false) {
   actionEpoch++; cancelTween(); cancelDrag(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
-  hintDirection = 'clockwise'; successfulActions = 0; rotated = false; selectHintShown = false;
-  const gameSeed = seed();
-  state = createGame({ cols: 8, rows: 12, seed: gameSeed, trial: true });
-  journalSafe(() => {
-    const now = new Date();
-    journalHints = 0; journalLastHint = null; journalReadyAt = performance.now();
-    startGameLog(journal, { seed: gameSeed, mode: `trial ${state.cols}x${state.rows}`, startedAt: now.getTime(), startedLabel: journalTime(now), device: parseDevice(navigator.userAgent), build: BUILD_ID });
-    resetCopyUi();
-  });
+  hintDirection = 'clockwise'; successfulActions = restored ? next.turn : 0; rotated = false; selectHintShown = false;
+  state = next;
+  journalHints = 0; journalLastHint = null; journalReadyAt = performance.now();
   scene = state.pieces; displayedScore = state.score;
   showNextRow(); refreshRotationPreviews();
   board.classList.remove('dragging'); frame.classList.remove('resolve', 'invalid'); $('gain').classList.remove('show');
-  if (state.skipNextRise) completedMessage();
+  if (text) message(text);
+  else if (state.skipNextRise) completedMessage();
   else message(rotationHintActive() ? ROTATE_IDLE_HINT : 'Торкнись фігури, щоб обрати.');
   resize();
 }
+function startGame(notice = '') {
+  const gameSeed = seed();
+  const next = createGame({ cols: 8, rows: 12, seed: gameSeed, trial: true });
+  journalSafe(() => {
+    const now = new Date();
+    startGameLog(journal, { seed: gameSeed, mode: `trial ${next.cols}x${next.rows}`, startedAt: now.getTime(), startedLabel: journalTime(now), device: parseDevice(navigator.userAgent), build: BUILD_ID });
+    resetCopyUi();
+  });
+  bestAtStart = best; recordBase = best;
+  installState(next, notice);
+  if (storageNoticePending && !notice) { storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); }
+  persistGame(); persistJournal(); // a fresh game replaces the stored one; the best score and the journal stay
+}
+// Restores the stored best score, last game and journal; a damaged or foreign game record never blocks a new game.
+async function initGame() {
+  const [bestRead, gameRead, journalRead] = await Promise.all([
+    storage.load(STORAGE_KEYS.best), storage.load(STORAGE_KEYS.game), storage.load(STORAGE_KEYS.journal),
+  ]);
+  if (bestRead.ok) { const parsed = parseBest(bestRead.value); if (parsed.ok) best = parsed.score; }
+  if (journalRead.ok) {
+    const imported = importJournal(journalRead.value);
+    if (imported.ok) journal.games = imported.journal.games;
+  }
+  const record = gameRead.ok ? parseGame(gameRead.value) : null;
+  if (!record?.ok) {
+    const damaged = gameRead.ok || gameRead.reason !== 'missing';
+    startGame(damaged ? 'Збережену партію не вдалося відновити, почато нову.' : '');
+    if (!storage.available && !storageNoticeShown) { storageNoticeShown = true; storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); }
+    return;
+  }
+  const bestStored = best;
+  best = Math.max(best, record.state.score, record.bestAtStart);
+  if (best > bestStored) persistSafe(() => storage.save(STORAGE_KEYS.best, serializeBest(best)));
+  bestAtStart = record.bestAtStart; recordBase = Math.max(best, bestAtStart);
+  journalSafe(() => {
+    const last = latestGame(journal);
+    if (record.state.status === 'gameover') { if (last && !last.end) finishGameLog(journal, record.state, { endedAt: record.savedAt }); }
+    else if (!last || last.end) {
+      startGameLog(journal, { seed: 0, mode: `trial ${record.state.cols}x${record.state.rows} restored`, startedAt: record.savedAt, startedLabel: null, device: parseDevice(navigator.userAgent), build: BUILD_ID });
+    }
+    resetCopyUi();
+  });
+  installState(record.state, record.state.turn > 0 ? 'Партію відновлено.' : '', true);
+  persistBest(); persistJournal();
+}
 async function commit(result, initialScene = scene) {
   if (!result.changed) { invalidFeedback('Шлях зайнятий. Спробуй обійти перешкоду.'); render(); return; }
+  cancelPreviewTransition();
   const epoch = ++actionEpoch, oldScore = state.score;
   successfulActions++; clearSuggestion();
   journalSafe(() => journalRecord(state, result)); // journal: successful actions only
   state = result.state; selectedId = null; busy = true; scene = initialScene;
+  persistBest(); persistGame(); persistJournal(); // the finished turn is stored BEFORE the animation starts
   message('Фігури займають свої місця…'); render();
   const hasDouble = result.events.some((event) => event.type === 'double');
   const doubled = hasDouble && (result.events.some((event) => event.type === 'rise') ? 'after-rise' : 'replace');
+  const hasDebutPreview = state.status === 'playing' && oldScore < COLOR_DEBUT_SCORE
+    && state.score >= COLOR_DEBUT_SCORE && state.nextRow.some((segment) => segment.color !== state._trialColor);
+  let didRise = false;
+  let waitingForDebut = false;
   for (const phase of buildPlayback(initialScene, result.events)) {
     activePhase = { ...phase, progress: 0 };
     if (phase.type === 'rotate') {
@@ -347,14 +480,26 @@ async function commit(result, initialScene = scene) {
     });
     if (!complete || actionEpoch !== epoch) return;
     rotationTween = null; scene = phase.to;
+    if (phase.type === 'rise') {
+      didRise = true;
+      waitingForDebut = hasDebutPreview && displayedScore < COLOR_DEBUT_SCORE;
+      if (waitingForDebut || state.status !== 'playing') transitionNextRow([], 'regular');
+      else transitionNextRow(state.nextRow, state.nextRowKind, state.skipNextRise);
+    }
     if (phase.type === 'clear') {
       displayedScore += phase.rows.length * 100;
       $('gain').textContent = `+${phase.rows.length * 100}`; $('gain').classList.remove('show'); void $('gain').offsetWidth; $('gain').classList.add('show');
+      if (waitingForDebut && displayedScore >= COLOR_DEBUT_SCORE) {
+        waitingForDebut = false;
+        render();
+        transitionNextRow(state.nextRow, state.nextRowKind, state.skipNextRise);
+      }
     }
   }
   scene = state.pieces; displayedScore = state.score; journalReadyAt = performance.now();
-  showNextRow(); refreshRotationPreviews();
-  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled); render();
+  if (!didRise || waitingForDebut || state.status === 'gameover') showNextRow();
+  refreshRotationPreviews();
+  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled, didRise); render();
 }
 function rotate(direction) {
   if (busy || drag || !selectedId || state.status !== 'playing') return;
@@ -369,7 +514,7 @@ function processDragSample(event) {
   drag = advanceDrag(state, drag, raw);
 }
 board.addEventListener('pointerdown', (event) => {
-  if (busy || state.status !== 'playing' || event.button > 0 || !event.isPrimary || drag) return;
+  if (!state || confirmOpen || busy || state.status !== 'playing' || event.button > 0 || !event.isPrimary || drag) return;
   event.preventDefault(); board.focus({ preventScroll: true });
   const rect = board.getBoundingClientRect();
   const x = Math.floor((event.clientX - rect.left) / cell), y = Math.floor((event.clientY - rect.top) / cell);
@@ -425,7 +570,16 @@ function cancelDrag() {
 board.addEventListener('pointercancel', (event) => { if (drag?.pointerId === event.pointerId) cancelDrag(); });
 board.addEventListener('lostpointercapture', (event) => { if (drag?.pointerId === event.pointerId) cancelDrag(); });
 window.addEventListener('blur', cancelDrag);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) journalReadyAt = performance.now(); if (document.hidden) { cancelDrag(); if (busy) finishPlayback(); } });
+window.addEventListener('pagehide', persistAll);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) journalReadyAt = performance.now();
+  if (document.hidden) {
+    persistAll();
+    cancelDrag();
+    if (busy) finishPlayback();
+    else if (previewTween) { cancelPreviewTransition(); showNextRow(); }
+  }
+});
 board.addEventListener('keydown', (event) => {
   if (!selectedId || busy || drag || state.status !== 'playing') return;
   if (event.key.toLowerCase() === 'r') { event.preventDefault(); rotate(event.shiftKey ? 'counterclockwise' : 'clockwise'); return; }
@@ -474,10 +628,28 @@ for (const ui of Object.values(copyUis)) {
     Promise.resolve(pending).then(() => { if (epoch === copyEpoch) copyDone(ui, true, text); }, () => { if (epoch === copyEpoch) copyDone(ui, false, text); });
   });
 }
-$('newGameButton').addEventListener('click', startGame); $('retryButton').addEventListener('click', startGame);
+// --- New game: an unfinished game is replaced only after an in-page confirmation (not window.confirm).
+const confirmBox = $('confirmNew'), confirmStart = $('confirmStart'), confirmCancel = $('confirmCancel');
+let confirmOpen = false;
+function closeConfirm() { confirmOpen = false; confirmBox.hidden = true; $('newGameButton').focus({ preventScroll: true }); }
+function requestNewGame() {
+  if (!state || confirmOpen) return;
+  if (state.status === 'playing' && state.turn > 0) { confirmOpen = true; confirmBox.hidden = false; confirmStart.focus({ preventScroll: true }); return; }
+  startGame();
+}
+confirmStart.addEventListener('click', () => { closeConfirm(); startGame(); });
+confirmCancel.addEventListener('click', closeConfirm);
+document.addEventListener('keydown', (event) => {
+  if (!confirmOpen) return;
+  if (event.key === 'Escape') { event.preventDefault(); closeConfirm(); }
+  else if (event.key === 'Enter' && event.repeat) event.preventDefault(); // a held key must not confirm by itself
+  else if (event.key === 'Enter' && document.activeElement !== confirmCancel) { event.preventDefault(); closeConfirm(); startGame(); }
+  else if (event.key === 'Tab') { event.preventDefault(); (document.activeElement === confirmStart ? confirmCancel : confirmStart).focus({ preventScroll: true }); }
+});
+$('newGameButton').addEventListener('click', requestNewGame); $('retryButton').addEventListener('click', () => startGame());
 $('helpButton').addEventListener('click', () => $('helpDialog').showModal());
 $('helpDialog').addEventListener('close', () => { journalReadyAt = performance.now(); }); // thinking time excludes reading the help
 $('closeHelp').addEventListener('click', () => $('helpDialog').close()); $('playButton').addEventListener('click', () => $('helpDialog').close());
 $('helpDialog').addEventListener('click', (e) => { if (e.target === $('helpDialog')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close(); } });
 new ResizeObserver(resize).observe(playArea);
-startGame();
+await initGame();

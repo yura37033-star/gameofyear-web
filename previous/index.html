@@ -25,7 +25,7 @@
           <button id="helpButton" class="icon-button" type="button" aria-label="Як грати">?</button>
         </header>
         <div class="hud">
-          <div><span class="label">ОЧКИ</span><strong id="score">0</strong></div>
+          <div><span class="label">ОЧКИ<span id="best" class="best" aria-label="Рекорд">Рекорд 0</span></span><strong id="score">0</strong></div>
           <div class="turn-card"><span class="label">ХОДІВ</span><b id="turn">0</b></div>
           <div class="field-badge">8 <span>×</span> 12</div>
         </div>
@@ -39,6 +39,7 @@
               <div class="game-over-card">
                 <h2>Гру завершено</h2>
                 <p>Верхній ряд залишився зайнятим.</p>
+                <p id="newRecord" class="new-record" role="status" hidden>Новий рекорд!</p>
                 <strong id="finalScore">0</strong>
                 <span class="label">НАБРАНО ОЧОК</span>
                 <button id="retryButton" class="primary-button" type="button">Ще партію <span>↗</span></button>
@@ -75,15 +76,25 @@
     <ol class="rules">
       <li><b>Переміщуй фігури</b><p>Перетягни фігуру вгору, вниз або вбік вільним шляхом. Зміна позиції після відпускання коштує один хід.</p></li>
       <li><b>Повертай фігури зі світлою рамкою</b><p>Обери таку фігуру й натисни Вліво чи Вправо. Поворот — повноцінний хід, як і переміщення; за потреби фігуру підіймає до вільної позиції.</p></li>
-      <li><b>Підказати хід</b><p>Поки в тебе менше 1000 очок, кнопка «Підказати хід» показує фігуру й місце або поворот, що ведуть до очищення. Хід вона не витрачає.</p></li>
-      <li><b>Збирай повні ряди одного кольору</b><p>Після підйому старі фігури можуть впасти у прогалини нового ряду. Кожен повний одноколірний ряд зникає й дає 100 очок.</p></li>
+      <li><b>Підказати хід</b><p>Протягом усієї партії кнопка може показати фігуру й місце або поворот, що ведуть до очищення. Запит підказки коштує 0 ходів.</p></li>
+      <li><b>Збирай повні ряди одного кольору</b><p>Кожен такий ряд дає 100 очок. Якщо він зник до підйому, показаний ряд зазвичай чекає. Від 3000 очок додається другий колір.</p></li>
     </ol>
-    <div class="help-tip">Партія завершується, якщо після падіння й усіх очищень верхній ряд лишився зайнятим. До 1000 очок гра може підібрати рятувальний ряд або раз дати хід без підйому.</div>
+    <div class="help-tip">Партія завершується, якщо після падіння й очищень верхній ряд зайнятий. Біля верху або після шести ходів без очищення гра може підібрати рятувальний ряд. До 1000 очок можлива разова пауза підйому.</div>
     <button id="copyJournalButton" class="secondary-button" type="button" aria-label="Скопіювати журнал останніх партій">Скопіювати журнал партій</button>
     <textarea id="copyJournalText" class="copy-text" readonly hidden rows="5" aria-label="Текст журналу для ручного копіювання"></textarea>
     <p id="copyJournalStatus" class="copy-status" role="status" aria-live="polite"></p>
     <button id="playButton" class="primary-button" type="button">До гри <span>→</span></button>
   </dialog>
+  <div id="confirmNew" class="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmText" hidden>
+    <div class="confirm-card">
+      <h2 id="confirmTitle">Почати нову партію?</h2>
+      <p id="confirmText">Поточну буде втрачено.</p>
+      <div class="confirm-actions">
+        <button id="confirmCancel" class="secondary-button" type="button" aria-label="Скасувати: лишити поточну партію">Скасувати</button>
+        <button id="confirmStart" class="primary-button" type="button" aria-label="Почати нову партію">Почати</button>
+      </div>
+    </div>
+  </div>
   <script type="module" src="./main.mjs"></script>
 </body>
 </html>

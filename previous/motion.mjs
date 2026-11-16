@@ -27,7 +27,7 @@ export function buildPlayback(initialPieces, events) {
       const old = new Map(phase.from.map((piece) => [piece.id, piece]));
       const distance = Math.max(1, ...phase.to.map((piece) => Math.abs(piece.cells[0].y - (old.get(piece.id)?.cells[0].y ?? piece.cells[0].y))));
       phase.duration = Math.min(280, 120 + Math.sqrt(distance) * 35);
-    } else phase.duration = { move: 90, clear: 170, rise: 220, double: 220, rotate: 150, gameover: 0 }[phase.type] ?? 0;
+    } else phase.duration = { move: 90, clear: 170, rise: 220, refill: 160, double: 220, rotate: 150, gameover: 0 }[phase.type] ?? 0;
   }
   return phases;
 }
@@ -55,12 +55,13 @@ export function samplePieces(phase, progress) {
     });
   }
   const amount = phase.type === 'fall' ? t * t : phase.type === 'rise' ? (1 - Math.cos(Math.PI * t)) / 2 : easeOut(t);
+  const initialOpacity = phase.type === 'refill' ? 0 : .35;
   return phase.to.map((piece) => {
     const before = old.get(piece.id);
     return { ...piece, cells: piece.cells.map((cell, index) => {
       const start = before?.cells[index] ?? { x: cell.x, y: cell.y + (phase.type === 'rise' ? 1 : 0) };
       return { x: start.x + (cell.x - start.x) * amount, y: start.y + (cell.y - start.y) * amount,
-        opacity: before ? 1 : .35 + .65 * amount };
+        opacity: before ? 1 : initialOpacity + (1 - initialOpacity) * amount };
     }) };
   });
 }
