@@ -3,7 +3,7 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'b1-8c5169e';
+export const BUILD_ID = 'b1-573199a';
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones
 
 export function createJournal() {
@@ -90,6 +90,7 @@ export function recordTurn(journal, {
     rescueInserted: rise && before.nextRowKind === 'rescue',
     next: after.nextRowKind === 'rescue' ? 'res' : 'reg',
     colors: colorCount(after),
+    w: after._witness?.steps === 1 || after._witness?.steps === 2 ? after._witness.steps : 0, // verified path for the shown row
     hints: hintsPressed,
     followed: Boolean(followedHint),
     over: gameOver ? (gameOver.reason ?? 'top-row') : null,
@@ -130,9 +131,9 @@ export function summarizeGame(game) {
 }
 
 export const LEGEND = 'L n move sec +gain rN h<before>><after> events next cN HN[f] | '
-  + 'move: M<cells incl. start>/<pieceLen> or Rcw|Rccw; sec: think time; rN: rows cleared; h: stack height; '
-  + 'events (joined by +): U rise, Da double after rise, Dr double instead of rise, P pause turn, X game over; '
-  + 'next: reg|res(cue) row; cN: colours on board; HN: hints pressed, f: first step of last hint followed';
+  + 'move: M<cells incl. start>/<pieceLen> or Rcw|Rccw; sec: think time; rN: rows cleared; h: stack; '
+  + 'events (+ joined): U rise, Da/Dr double after/instead of rise, P pause, X game over; '
+  + 'next: reg|res(cue) row, +1|2 verified path (none: no path); cN: colours; HN: hints pressed, f: first step of last hint followed';
 
 function seconds(ms) {
   return (Math.min(ms, 999900) / 1000).toFixed(1);
@@ -152,7 +153,7 @@ export function formatTurn(turn) {
     `r${turn.rows}`,
     `${turn.hBefore}>${turn.hAfter}`,
     events.length ? events.join('+') : '-',
-    turn.next,
+    `${turn.next}${turn.w ? turn.w : ''}`,
     `c${turn.colors}`,
     `H${turn.hints}${turn.followed ? 'f' : ''}`,
   ].join(' ');
@@ -196,7 +197,9 @@ function onlyKeys(object, keys) {
 
 function importTurn(turn) {
   const keys = [...TURN_INTEGERS, 'kind', 'direction', 'rise', 'doubled', 'pause', 'rescueInserted', 'next', 'followed', 'over'];
-  if (!onlyKeys(turn, keys)) return null;
+  const { w, ...rest } = turn ?? {};
+  if (w !== undefined && w !== 0 && w !== 1 && w !== 2) return null;
+  if (!onlyKeys(rest, keys)) return null;
   if (!TURN_INTEGERS.every((key) => isCount(turn[key]))) return null;
   if (turn.kind !== 'move' && turn.kind !== 'rotate') return null;
   if (turn.direction !== null && turn.direction !== 'cw' && turn.direction !== 'ccw') return null;
@@ -206,6 +209,7 @@ function importTurn(turn) {
   if (turn.over !== null && !isText(turn.over, 24)) return null;
   const copy = {};
   for (const key of keys) copy[key] = turn[key];
+  copy.w = turn.w === 1 || turn.w === 2 ? turn.w : 0; // absent in journals saved by the previous build
   return copy;
 }
 
