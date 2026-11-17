@@ -8,7 +8,7 @@
 // continue differently; old records are then rejected and a new game starts (the best score
 // is a separate record and survives). The golden test in tests/persistence.test.mjs fails
 // with that instruction when such a change slips in.
-import { movePieceAlongPath, previewMovePath, previewRotation, rotatePiece } from './game.mjs';
+import { HAMMER_CHARGES, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece } from './game.mjs?v=hammer-8eeac2407a';
 
 export const SCHEMA_VERSION = 1;
 export const RULES_VERSION = 1;
@@ -96,6 +96,7 @@ export function serializeGame(state, { bestAtStart = 0, savedAt = 0 } = {}) {
     _trialColor: state._trialColor ?? null,
   };
   if (state.trial === true) {
+    out.hammersRemaining = state.hammersRemaining === undefined ? HAMMER_CHARGES : state.hammersRemaining;
     out._debutRowsReserved = state._debutRowsReserved ?? 0;
     out._droughtTurns = state._droughtTurns ?? 0;
     out._droughtRescueIssued = state._droughtRescueIssued === true;
@@ -288,7 +289,7 @@ function validateState(raw) {
   onlyKeys(raw,
     ['cols', 'rows', 'palette', 'pieces', 'nextRow', 'nextRowKind', 'score', 'turn', 'status', 'trial',
       'skipNextRise', 'skipRiseUsed', '_trialColor', '_rng', '_nextId', ...(trial ? ['_debutRowsReserved', '_droughtTurns', '_droughtRescueIssued', '_witness'] : [])],
-    trial ? [] : ['_witness']);
+    trial ? ['hammersRemaining'] : ['_witness']);
   const size = trial ? TRIAL_SIZE : CLASSIC_SIZE;
   need(raw.cols === size.cols && raw.rows === size.rows, 'size');
   const { cols, rows } = size;
@@ -321,12 +322,15 @@ function validateState(raw) {
     _trialColor: raw._trialColor,
   };
   if (trial) {
+    const hammersRemaining = raw.hammersRemaining === undefined ? HAMMER_CHARGES : raw.hammersRemaining;
+    need(isInt(hammersRemaining, 0, HAMMER_CHARGES), 'hammers-remaining');
     need(isInt(raw._debutRowsReserved, 0, MAX_DEBUT_ROWS), 'debut-rows');
     need(raw._debutRowsReserved === 0 || raw.score >= COLOR_DEBUT_SCORE, 'debut-score');
     need(isInt(raw._droughtTurns, 0, MAX_DROUGHT_TURNS), 'drought-turns');
     need(typeof raw._droughtRescueIssued === 'boolean', 'drought-issued');
     need(!raw._droughtRescueIssued || raw._droughtTurns === MAX_DROUGHT_TURNS, 'drought-issued-turns');
     state._debutRowsReserved = raw._debutRowsReserved;
+    state.hammersRemaining = hammersRemaining;
     state._droughtTurns = raw._droughtTurns;
     state._droughtRescueIssued = raw._droughtRescueIssued;
   }

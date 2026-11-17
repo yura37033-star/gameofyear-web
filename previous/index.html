@@ -11,7 +11,7 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23101c31'/%3E%3Cpath d='M7 7h8v8H7z' fill='%235D8FE8'/%3E%3Cpath d='M17 7h8v8h-8z' fill='%23F3C969'/%3E%3Cpath d='M7 17h8v8H7z' fill='%23F3C969'/%3E%3Cpath d='M17 17h8v8h-8z' fill='%235D8FE8'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css?v=hammer-8eeac2407a">
 </head>
 <body>
   <main class="layout">
@@ -26,7 +26,13 @@
       <div class="game-header">
         <header class="masthead">
           <div class="brand"><div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div><span>Кольорові ряди</span></div>
-          <button id="helpButton" class="icon-button" type="button" aria-label="Як грати">?</button>
+          <div class="masthead-actions">
+            <button id="hammerButton" class="hammer-button" type="button" aria-pressed="false" aria-label="Молоток, залишилось 3 удари" disabled>
+              <span class="hammer-icon" aria-hidden="true">🔨</span><span class="hammer-name">Молоток</span>
+              <span id="hammerCount" class="hammer-count" aria-hidden="true">3</span>
+            </button>
+            <button id="helpButton" class="icon-button" type="button" aria-label="Як грати">?</button>
+          </div>
         </header>
         <div class="hud">
           <div><span class="label">ОЧКИ<span id="best" class="best" aria-label="Рекорд">Рекорд 0</span></span><strong id="score">0</strong></div>
@@ -81,6 +87,7 @@
       <li><b>Переміщуй фігури</b><p>Перетягни фігуру вгору, вниз або вбік вільним шляхом. Зміна позиції після відпускання коштує один хід.</p></li>
       <li><b>Повертай фігури зі світлою рамкою</b><p>Обери таку фігуру й натисни Вліво чи Вправо. Поворот — повноцінний хід, як і переміщення; за потреби фігуру підіймає до вільної позиції.</p></li>
       <li><b>Підказати хід</b><p>Протягом усієї партії кнопка може показати фігуру й місце або поворот, що ведуть до очищення. Запит підказки коштує 0 ходів.</p></li>
+      <li><b>Молоток</b><p>На партію є три удари. Натисни молоток і торкнись фігури, щоб прибрати її цілком. Якщо поле очиститься повністю, його заповнить показаний ряд.</p></li>
       <li><b>Збирай повні ряди одного кольору</b><p>Кожен такий ряд дає 100 очок. Якщо він зник до підйому, показаний ряд зазвичай чекає. Від 3000 очок додається другий колір.</p></li>
     </ol>
     <div class="help-tip">Партія завершується, якщо після падіння й очищень верхній ряд зайнятий. Біля верху або після шести ходів без очищення гра може підібрати рятувальний ряд. До 1000 очок можлива разова пауза підйому.</div>
@@ -99,6 +106,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./main.mjs"></script>
+  <script type="module" src="./main.mjs?v=hammer-8eeac2407a"></script>
 </body>
 </html>

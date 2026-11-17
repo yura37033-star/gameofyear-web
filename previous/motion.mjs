@@ -1,4 +1,4 @@
-import { previewMovePath } from './core/game.mjs';
+import { previewMovePath } from './core/game.mjs?v=hammer-8eeac2407a';
 
 const copyPieces = (pieces) => pieces.map((piece) => ({ ...piece, frame: { ...piece.frame }, cells: piece.cells.map((cell) => ({ ...cell })) }));
 const clamp = (value) => Math.max(0, Math.min(1, value));
@@ -14,6 +14,7 @@ export function buildPlayback(initialPieces, events) {
       last.to = event.pieces;
     } else {
       const phase = { type: event.type, from: previous, to: event.pieces, rows: event.rows ?? [] };
+      if (event.type === 'hammer') phase.pieceId = event.pieceId;
       if (event.type === 'rotate') {
         phase.pieceId = event.pieceId;
         phase.direction = event.direction;
@@ -27,7 +28,7 @@ export function buildPlayback(initialPieces, events) {
       const old = new Map(phase.from.map((piece) => [piece.id, piece]));
       const distance = Math.max(1, ...phase.to.map((piece) => Math.abs(piece.cells[0].y - (old.get(piece.id)?.cells[0].y ?? piece.cells[0].y))));
       phase.duration = Math.min(280, 120 + Math.sqrt(distance) * 35);
-    } else phase.duration = { move: 90, clear: 170, rise: 220, refill: 160, double: 220, rotate: 150, gameover: 0 }[phase.type] ?? 0;
+    } else phase.duration = { move: 90, hammer: 130, clear: 170, rise: 220, refill: 160, double: 220, rotate: 150, gameover: 0 }[phase.type] ?? 0;
   }
   return phases;
 }
@@ -35,12 +36,11 @@ export function buildPlayback(initialPieces, events) {
 export function samplePieces(phase, progress) {
   const t = clamp(progress);
   if (t === 1) return copyPieces(phase.to);
-  if (phase.type === 'clear') {
-    return phase.from.map((piece) => ({ ...piece, cells: piece.cells.map((cell) => ({
-      ...cell,
-      opacity: phase.rows.includes(cell.y) ? 1 - easeOut(t) : 1,
-      scale: phase.rows.includes(cell.y) ? 1 - .3 * t : 1,
-    })) }));
+  if (phase.type === 'clear' || phase.type === 'hammer') {
+    return phase.from.map((piece) => ({ ...piece, cells: piece.cells.map((cell) => {
+      const removed = phase.type === 'hammer' ? piece.id === phase.pieceId : phase.rows.includes(cell.y);
+      return { ...cell, opacity: removed ? 1 - easeOut(t) : 1, scale: removed ? 1 - .3 * t : 1 };
+    }) }));
   }
   const old = new Map(phase.from.map((piece) => [piece.id, piece]));
   if (phase.type === 'double') {

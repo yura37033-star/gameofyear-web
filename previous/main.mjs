@@ -1,8 +1,8 @@
-import { COLOR_DEBUT_SCORE, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction } from './core/game.mjs';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTurn, startGameLog } from './journal.mjs';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs';
-import { STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs';
+import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=hammer-8eeac2407a';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=hammer-8eeac2407a';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog } from './journal.mjs?v=hammer-8eeac2407a';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=hammer-8eeac2407a';
+import { HAMMER_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=hammer-8eeac2407a';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -19,6 +19,10 @@ let previewTween = null, previewFrame = 0;
 let hintDirection = 'clockwise';
 let suggestion = null, suggestionFrame = 0, hintVisible = true;
 const hintButton = $('hintButton');
+const hammerButton = $('hammerButton'), hammerCount = $('hammerCount');
+const HAMMER_PROMPT = 'Торкнись фігури, яку хочеш прибрати.';
+const HAMMER_TAP_DISTANCE = 8;
+let hammerArmed = false, hammerTarget = null;
 let successfulActions = 0, rotated = false, selectHintShown = false;
 const ROTATE_IDLE_HINT = 'Торкнись фігури: зі світлою рамкою її можна й повернути.';
 const ROTATE_SELECT_HINT = 'Фігури зі світлою рамкою можна повернути кнопками Вліво / Вправо.';
@@ -32,16 +36,22 @@ function journalTime(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 function journalRecord(before, result) {
-  const first = result.events[0], hint = journalLastHint, rotateAction = first.type === 'rotate';
-  const followed = Boolean(hint) && hint.pieceId === first.pieceId && (rotateAction
-    ? hint.kind === 'rotate' && hint.direction === first.direction
-    : hint.kind === 'move' && hint.offset.x === first.lastValidOffset?.x && hint.offset.y === first.lastValidOffset?.y);
-  recordTurn(journal, {
-    before, after: result.state, result, kind: rotateAction ? 'rotate' : 'move',
-    pathLength: first.path?.length ?? 0, pieceLength: before.pieces.find((item) => item.id === first.pieceId)?.cells.length ?? 0,
-    direction: first.direction ?? null, ms: performance.now() - journalReadyAt, hintsPressed: journalHints, followedHint: followed,
-  });
-  journalHints = 0; journalLastHint = null;
+  const first = result.events[0];
+  if (first.type === 'hammer') {
+    recordHammer(journal, { before, after: result.state, result });
+  } else {
+    const hint = journalLastHint, rotateAction = first.type === 'rotate';
+    const followed = Boolean(hint) && hint.pieceId === first.pieceId && (rotateAction
+      ? hint.kind === 'rotate' && hint.direction === first.direction
+      : hint.kind === 'move' && hint.offset.x === first.lastValidOffset?.x && hint.offset.y === first.lastValidOffset?.y);
+    recordTurn(journal, {
+      before, after: result.state, result, kind: rotateAction ? 'rotate' : 'move',
+      pathLength: first.path?.length ?? 0, pieceLength: before.pieces.find((item) => item.id === first.pieceId)?.cells.length ?? 0,
+      direction: first.direction ?? null, ms: performance.now() - journalReadyAt, hintsPressed: journalHints, followedHint: followed,
+    });
+    journalHints = 0;
+  }
+  journalLastHint = null;
   if (result.state.status === 'gameover') finishGameLog(journal, result.state, { endedAt: Date.now() });
 }
 
@@ -77,6 +87,16 @@ function persistJournal() {
   });
 }
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
+
+async function readSavedRecord(slot) {
+  const stored = await storage.load(STORAGE_KEYS[slot]);
+  if (stored.ok || stored.reason !== 'missing') return stored;
+  const legacy = await storage.load(LEGACY_STORAGE_KEYS[slot]);
+  return legacy.ok ? { ...legacy, legacy: true } : legacy;
+}
+function hasProgress(game) {
+  return game.turn > 0 || (game.hammersRemaining ?? HAMMER_CHARGES) < HAMMER_CHARGES;
+}
 
 function seed() {
   if (globalThis.crypto?.getRandomValues) return crypto.getRandomValues(new Uint32Array(1))[0];
@@ -114,7 +134,7 @@ function resize() {
   const widthPerCell = (playArea.clientWidth - frameWidth) / state.cols;
   const heightPerCell = (playArea.clientHeight - frameHeight - labelHeight - gap) / (state.rows + 1);
   const nextCell = Math.max(8, Math.floor(Math.min(widthPerCell, heightPerCell)));
-  if (nextCell !== cell && drag) cancelDrag();
+  if (nextCell !== cell) { cancelDrag(); cancelHammerTarget(); }
   cell = nextCell;
   setCanvas(board, ctx, cell * state.cols, cell * state.rows);
   setCanvas(nextCanvas, nextCtx, cell * state.cols, cell);
@@ -270,14 +290,20 @@ function showNextRow() {
 }
 function render() {
   if (!state) return;
-  const showRotation = !busy && !drag && state.status === 'playing';
+  const showRotation = !busy && !drag && !hammerArmed && state.status === 'playing';
+  const remaining = state.hammersRemaining ?? 0;
+  hammerCount.textContent = remaining;
+  hammerButton.disabled = busy || Boolean(drag) || confirmOpen || state.status !== 'playing' || remaining === 0;
+  hammerButton.setAttribute('aria-pressed', String(hammerArmed));
+  hammerButton.setAttribute('aria-label', `Молоток, запас ударів ${remaining} з ${HAMMER_CHARGES}`);
+  board.classList.toggle('hammer-armed', hammerArmed);
   const rotationHints = showRotation && rotationPreviews.get(selectedId);
   for (const [direction, button] of Object.entries(rotationButtons)) {
     button.disabled = !rotationHints?.[direction];
   }
   if (!busy) hintVisible = state.trial === true && state.status === 'playing';
   hintButton.classList.toggle('is-off', !hintVisible);
-  hintButton.disabled = busy || Boolean(drag) || !hintVisible;
+  hintButton.disabled = busy || Boolean(drag || hammerTarget) || !hintVisible;
   for (const [direction, button] of Object.entries(rotationButtons)) {
     button.classList.toggle('hint-target', Boolean(suggestion) && !busy && suggestion.kind === 'rotate' && suggestion.direction === direction);
   }
@@ -321,7 +347,8 @@ function render() {
   $('newRecord').hidden = !(state.status === 'gameover' && isNewRecord(state.score, bestAtStart));
   $('gameOver').hidden = state.status !== 'gameover' || busy;
   $('finalScore').textContent = state.score.toLocaleString('uk-UA');
-  board.setAttribute('aria-label', `Поле ${state.cols} на ${state.rows}. Очки: ${displayedScore}. Ходів: ${state.turn}. ${selectedId ? 'Фігуру обрано.' : 'Обери фігуру.'}`);
+  const boardPrompt = hammerArmed ? HAMMER_PROMPT : selectedId ? 'Фігуру обрано.' : 'Обери фігуру.';
+  board.setAttribute('aria-label', `Поле ${state.cols} на ${state.rows}. Очки: ${displayedScore}. Ходів: ${state.turn}. ${boardPrompt}`);
 }
 function clearSuggestion() {
   suggestion = null; cancelAnimationFrame(suggestionFrame); suggestionFrame = 0;
@@ -333,7 +360,8 @@ function suggestionTick() {
   if (!reducedMotion.matches && !document.hidden) suggestionFrame = requestAnimationFrame(suggestionTick);
 }
 function requestHint() {
-  if (!state || busy || drag || state.status !== 'playing' || !hintVisible) return;
+  if (!state || busy || drag || hammerTarget || confirmOpen || state.status !== 'playing' || !hintVisible) return;
+  disarmHammer();
   const found = suggestAction(state);
   journalHints++; journalLastHint = found && { kind: found.kind, pieceId: found.pieceId, direction: found.direction, offset: found.offset }; // journal
   clearSuggestion();
@@ -368,13 +396,14 @@ function animate(duration, update) {
     animationFrame = requestAnimationFrame(tick);
   });
 }
-function completedMessage(gained = 0, doubled = false, didRise = true) {
+function completedMessage(gained = 0, doubled = false, didRise = true, hammered = false) {
   if (storageNoticePending && state.status === 'playing') { storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); return; }
   const doubledText = doubled === 'after-rise' ? 'Додано ряд, поле подвоїлось.' : state.skipNextRise ? 'Поле подвоїлось. Наступний хід без підйому.' : 'Поле подвоїлось. Показаний ряд чекає.';
   if (state.status === 'gameover') message('Верхній ряд зайнятий.', 'bad');
   else if (gained && doubled) message(`Прибрано рядів: ${gained / 100} · +${gained}. ${doubledText}`, 'good');
   else if (gained) message(`Прибрано рядів: ${gained / 100} · +${gained} очок${didRise ? '' : '. Показаний ряд чекає.'}`, 'good');
   else if (doubled) message(doubledText, 'good');
+  else if (hammered) message('Фігуру прибрано.', 'good');
   else if (state.skipNextRise) message('Наступний хід без підйому.', 'good');
   else if (rotationHintActive()) message(ROTATE_IDLE_HINT);
   else message('Обирай фігуру для наступного ходу.');
@@ -386,7 +415,7 @@ function finishPlayback() {
   frame.classList.remove('resolve'); completedMessage(); render();
 }
 function installState(next, text, restored = false) {
-  actionEpoch++; cancelTween(); cancelDrag(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
+  actionEpoch++; cancelTween(); cancelDrag(); disarmHammer(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
   hintDirection = 'clockwise'; successfulActions = restored ? next.turn : 0; rotated = false; selectHintShown = false;
   state = next;
   journalHints = 0; journalLastHint = null; journalReadyAt = performance.now();
@@ -414,7 +443,7 @@ function startGame(notice = '') {
 // Restores the stored best score, last game and journal; a damaged or foreign game record never blocks a new game.
 async function initGame() {
   const [bestRead, gameRead, journalRead] = await Promise.all([
-    storage.load(STORAGE_KEYS.best), storage.load(STORAGE_KEYS.game), storage.load(STORAGE_KEYS.journal),
+    storage.load(STORAGE_KEYS.best), readSavedRecord('game'), readSavedRecord('journal'),
   ]);
   if (bestRead.ok) { const parsed = parseBest(bestRead.value); if (parsed.ok) best = parsed.score; }
   if (journalRead.ok) {
@@ -440,20 +469,23 @@ async function initGame() {
     }
     resetCopyUi();
   });
-  installState(record.state, record.state.turn > 0 ? 'Партію відновлено.' : '', true);
+  installState(record.state, hasProgress(record.state) ? 'Партію відновлено.' : '', true);
+  if (gameRead.legacy) persistGame();
   persistBest(); persistJournal();
 }
 async function commit(result, initialScene = scene) {
   if (!result.changed) { invalidFeedback('Шлях зайнятий. Спробуй обійти перешкоду.'); render(); return; }
   cancelPreviewTransition();
   const epoch = ++actionEpoch, oldScore = state.score;
-  successfulActions++; clearSuggestion();
+  const hammered = result.events[0]?.type === 'hammer';
+  if (!hammered) successfulActions++;
+  clearSuggestion();
   journalSafe(() => journalRecord(state, result)); // journal: successful actions only
   state = result.state; selectedId = null; busy = true; scene = initialScene;
   persistBest(); persistGame(); persistJournal(); // the finished turn is stored BEFORE the animation starts
   message('Фігури займають свої місця…'); render();
   const hasDouble = result.events.some((event) => event.type === 'double');
-  const doubled = hasDouble && (result.events.some((event) => event.type === 'rise') ? 'after-rise' : 'replace');
+  const doubled = hasDouble && (result.events.some((event) => event.type === 'rise' || event.type === 'refill') ? 'after-rise' : 'replace');
   const hasDebutPreview = state.status === 'playing' && oldScore < COLOR_DEBUT_SCORE
     && state.score >= COLOR_DEBUT_SCORE && state.nextRow.some((segment) => segment.color !== state._trialColor);
   let didRise = false;
@@ -480,7 +512,7 @@ async function commit(result, initialScene = scene) {
     });
     if (!complete || actionEpoch !== epoch) return;
     rotationTween = null; scene = phase.to;
-    if (phase.type === 'rise') {
+    if (phase.type === 'rise' || (hammered && phase.type === 'refill')) {
       didRise = true;
       waitingForDebut = hasDebutPreview && displayedScore < COLOR_DEBUT_SCORE;
       if (waitingForDebut || state.status !== 'playing') transitionNextRow([], 'regular');
@@ -499,10 +531,10 @@ async function commit(result, initialScene = scene) {
   scene = state.pieces; displayedScore = state.score; journalReadyAt = performance.now();
   if (!didRise || waitingForDebut || state.status === 'gameover') showNextRow();
   refreshRotationPreviews();
-  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled, didRise); render();
+  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled, didRise, hammered); render();
 }
 function rotate(direction) {
-  if (busy || drag || !selectedId || state.status !== 'playing') return;
+  if (busy || drag || hammerArmed || confirmOpen || !selectedId || state.status !== 'playing') return;
   const result = rotatePiece(state, selectedId, direction);
   if (result.changed) { rotated = true; commit(result); }
 }
@@ -513,14 +545,50 @@ function processDragSample(event) {
   if (!drag.moved) return;
   drag = advanceDrag(state, drag, raw);
 }
-board.addEventListener('pointerdown', (event) => {
-  if (!state || confirmOpen || busy || state.status !== 'playing' || event.button > 0 || !event.isPrimary || drag) return;
-  event.preventDefault(); board.focus({ preventScroll: true });
+function pieceAt(event) {
   const rect = board.getBoundingClientRect();
   const x = Math.floor((event.clientX - rect.left) / cell), y = Math.floor((event.clientY - rect.top) / cell);
-  const hit = state.pieces.find((p) => p.cells.some((c) => c.x === x && c.y === y));
+  return state.pieces.find((item) => item.cells.some((point) => point.x === x && point.y === y));
+}
+function movedDuringHammerTap(event, target) {
+  return Math.hypot(event.clientX - target.startX, event.clientY - target.startY) > HAMMER_TAP_DISTANCE;
+}
+function cancelHammerTarget() {
+  if (!hammerTarget) return;
+  const { pointerId } = hammerTarget;
+  hammerTarget = null; selectedId = null;
+  if (board.hasPointerCapture(pointerId)) board.releasePointerCapture(pointerId);
+  scheduleRender();
+}
+function disarmHammer() {
+  if (!hammerArmed) return;
+  hammerArmed = false; cancelHammerTarget();
+}
+function toggleHammer() {
+  if (!state || busy || drag || confirmOpen || state.status !== 'playing' || !state.hammersRemaining) return;
+  if (hammerArmed) {
+    disarmHammer();
+    completedMessage();
+  } else {
+    hammerArmed = true; selectedId = null; clearSuggestion();
+    message(HAMMER_PROMPT);
+  }
+  render();
+}
+board.addEventListener('pointerdown', (event) => {
+  if (!state || confirmOpen || busy || state.status !== 'playing' || event.button > 0 || !event.isPrimary || drag || hammerTarget) return;
+  event.preventDefault(); board.focus({ preventScroll: true });
+  const hit = pieceAt(event);
   selectedId = hit?.id ?? null;
   if (suggestion && suggestion.pieceId !== selectedId) clearSuggestion();
+  if (hammerArmed) {
+    if (hit) {
+      hammerTarget = { id: hit.id, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId };
+      board.setPointerCapture(event.pointerId);
+    }
+    render();
+    return;
+  }
   if (hit) {
     drag = { id: hit.id, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId,
       path: [{ x: 0, y: 0 }], offset: { x: 0, y: 0 }, floating: { x: 0, y: 0 }, moved: false, blocked: false };
@@ -530,6 +598,11 @@ board.addEventListener('pointerdown', (event) => {
   render();
 });
 board.addEventListener('pointermove', (event) => {
+  if (hammerTarget?.pointerId === event.pointerId) {
+    event.preventDefault();
+    if (movedDuringHammerTap(event, hammerTarget)) cancelHammerTarget();
+    return;
+  }
   if (!drag || drag.pointerId !== event.pointerId) return;
   event.preventDefault();
   const samples = event.getCoalescedEvents?.() ?? [];
@@ -537,6 +610,16 @@ board.addEventListener('pointermove', (event) => {
   processDragSample(event); scheduleRender();
 });
 board.addEventListener('pointerup', (event) => {
+  if (hammerTarget?.pointerId === event.pointerId) {
+    const target = hammerTarget;
+    const validTap = !movedDuringHammerTap(event, target) && pieceAt(event)?.id === target.id;
+    cancelHammerTarget();
+    if (validTap && hammerArmed && !confirmOpen && !busy) {
+      const result = useHammer(state, target.id);
+      if (result.changed) { disarmHammer(); commit(result); }
+    }
+    return;
+  }
   if (!drag || drag.pointerId !== event.pointerId) return;
   processDragSample(event);
   const completed = drag;
@@ -567,21 +650,25 @@ function cancelDrag() {
   if (board.hasPointerCapture(pointerId)) board.releasePointerCapture(pointerId);
   scheduleRender();
 }
-board.addEventListener('pointercancel', (event) => { if (drag?.pointerId === event.pointerId) cancelDrag(); });
-board.addEventListener('lostpointercapture', (event) => { if (drag?.pointerId === event.pointerId) cancelDrag(); });
-window.addEventListener('blur', cancelDrag);
+function cancelPointer(event) {
+  if (drag?.pointerId === event.pointerId) cancelDrag();
+  if (hammerTarget?.pointerId === event.pointerId) cancelHammerTarget();
+}
+board.addEventListener('pointercancel', cancelPointer);
+board.addEventListener('lostpointercapture', cancelPointer);
+window.addEventListener('blur', () => { cancelDrag(); cancelHammerTarget(); });
 window.addEventListener('pagehide', persistAll);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) journalReadyAt = performance.now();
   if (document.hidden) {
     persistAll();
-    cancelDrag();
+    cancelDrag(); cancelHammerTarget();
     if (busy) finishPlayback();
     else if (previewTween) { cancelPreviewTransition(); showNextRow(); }
   }
 });
 board.addEventListener('keydown', (event) => {
-  if (!selectedId || busy || drag || state.status !== 'playing') return;
+  if (!selectedId || busy || drag || hammerArmed || confirmOpen || state.status !== 'playing') return;
   if (event.key.toLowerCase() === 'r') { event.preventDefault(); rotate(event.shiftKey ? 'counterclockwise' : 'clockwise'); return; }
   const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
   if (direction) { event.preventDefault(); commit(movePieceAlongPath(state, selectedId, [{ x: direction[0], y: direction[1] }])); }
@@ -593,6 +680,7 @@ for (const [direction, button] of Object.entries(rotationButtons)) {
   button.addEventListener('click', () => rotate(direction));
 }
 hintButton.addEventListener('click', requestHint);
+hammerButton.addEventListener('click', toggleHammer);
 // --- Copy results (DEMO_PLAN 18): clipboard write inside the click handler; read-only textarea as the fallback.
 const copyUis = {
   result: { button: $('copyResultButton'), status: $('copyResultStatus'), area: $('copyResultText'), label: 'Скопіювати результати', build: () => { const game = latestGame(journal); return game ? formatReport(game) : ''; } },
@@ -631,23 +719,33 @@ for (const ui of Object.values(copyUis)) {
 // --- New game: an unfinished game is replaced only after an in-page confirmation (not window.confirm).
 const confirmBox = $('confirmNew'), confirmStart = $('confirmStart'), confirmCancel = $('confirmCancel');
 let confirmOpen = false;
-function closeConfirm() { confirmOpen = false; confirmBox.hidden = true; $('newGameButton').focus({ preventScroll: true }); }
+function closeConfirm() { confirmOpen = false; confirmBox.hidden = true; $('newGameButton').focus({ preventScroll: true }); render(); }
 function requestNewGame() {
   if (!state || confirmOpen) return;
-  if (state.status === 'playing' && state.turn > 0) { confirmOpen = true; confirmBox.hidden = false; confirmStart.focus({ preventScroll: true }); return; }
+  if (hammerArmed) { disarmHammer(); completedMessage(); }
+  if (state.status === 'playing' && hasProgress(state)) {
+    confirmOpen = true; confirmBox.hidden = false; confirmStart.focus({ preventScroll: true }); render();
+    return;
+  }
   startGame();
 }
 confirmStart.addEventListener('click', () => { closeConfirm(); startGame(); });
 confirmCancel.addEventListener('click', closeConfirm);
 document.addEventListener('keydown', (event) => {
-  if (!confirmOpen) return;
+  if (!confirmOpen) {
+    if (event.key === 'Escape' && hammerArmed) { event.preventDefault(); disarmHammer(); completedMessage(); render(); }
+    return;
+  }
   if (event.key === 'Escape') { event.preventDefault(); closeConfirm(); }
   else if (event.key === 'Enter' && event.repeat) event.preventDefault(); // a held key must not confirm by itself
   else if (event.key === 'Enter' && document.activeElement !== confirmCancel) { event.preventDefault(); closeConfirm(); startGame(); }
   else if (event.key === 'Tab') { event.preventDefault(); (document.activeElement === confirmStart ? confirmCancel : confirmStart).focus({ preventScroll: true }); }
 });
 $('newGameButton').addEventListener('click', requestNewGame); $('retryButton').addEventListener('click', () => startGame());
-$('helpButton').addEventListener('click', () => $('helpDialog').showModal());
+$('helpButton').addEventListener('click', () => {
+  if (hammerArmed) { disarmHammer(); completedMessage(); render(); }
+  $('helpDialog').showModal();
+});
 $('helpDialog').addEventListener('close', () => { journalReadyAt = performance.now(); }); // thinking time excludes reading the help
 $('closeHelp').addEventListener('click', () => $('helpDialog').close()); $('playButton').addEventListener('click', () => $('helpDialog').close());
 $('helpDialog').addEventListener('click', (e) => { if (e.target === $('helpDialog')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close(); } });

@@ -1,6 +1,7 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=hammer-8eeac2407a';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
+export const HAMMER_CHARGES = 3;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
 const DROUGHT_RESCUE_TURNS = 6;
@@ -368,6 +369,13 @@ function firstAvailableMove(state) {
 
 function hasReadyRows(pieces, cols, rows) {
   return findClearableRows(pieces, cols, rows).length > 0;
+}
+
+function insertRowAtBottom(state, row) {
+  for (const segment of row) {
+    const cells = Array.from({ length: segment.length }, (_, index) => ({ x: segment.x + index, y: state.rows - 1 }));
+    state.pieces.push({ id: `p${state._nextId++}`, color: segment.color, cells, frame: makeFrame(cells) });
+  }
 }
 
 function fallbackStart(cols, rows, palette) {
@@ -908,6 +916,7 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
     turn: 0,
     status: 'playing',
     trial: trialEnabled,
+    ...(trialEnabled ? { hammersRemaining: HAMMER_CHARGES } : {}),
     skipNextRise: false,
     skipRiseUsed: false,
     nextRowKind: 'regular',
@@ -1021,15 +1030,7 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
       cells: translateCells(piece.cells, 0, -1),
       frame: { ...piece.frame, y: piece.frame.y - 1 },
     }));
-    for (const segment of row) {
-      const cells = Array.from({ length: segment.length }, (_, index) => ({ x: segment.x + index, y: state.rows - 1 }));
-      nextState.pieces.push({
-        id: `p${nextState._nextId++}`,
-        color: segment.color,
-        cells,
-        frame: makeFrame(cells),
-      });
-    }
+    insertRowAtBottom(nextState, row);
     addSnapshotEvent(events, { type: 'rise', rows: 1 }, nextState.pieces);
     const postRiseIdFactory = makeIdFactory(nextState._nextId);
     const postRisePhysics = resolvePhysics(nextState.pieces, state, events, postRiseIdFactory.next);
@@ -1044,10 +1045,7 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
       doubled = 'after-rise';
     }
     if (state.trial && nextState.pieces.length === 0) {
-      for (const segment of row) {
-        const cells = Array.from({ length: segment.length }, (_, index) => ({ x: segment.x + index, y: state.rows - 1 }));
-        nextState.pieces.push({ id: `p${nextState._nextId++}`, color: segment.color, cells, frame: makeFrame(cells) });
-      }
+      insertRowAtBottom(nextState, row);
       addSnapshotEvent(events, { type: 'refill', rows: 1 }, nextState.pieces);
       const refillIds = makeIdFactory(nextState._nextId);
       doubleSingleRow(nextState, refillIds.next, events);
@@ -1121,6 +1119,62 @@ export function rotatePiece(state, pieceId, direction = 'clockwise') {
   const preview = previewRotation(state, pieceId, direction);
   if (!preview.valid) return failedMutation(state, preview.reason);
   return finalizeMove(state, pieceId, preview, { type: 'rotate', pieceId, direction });
+}
+
+export function useHammer(state, pieceId) {
+  if (!state?.trial) return failedMutation(state, 'not-trial');
+  if (state.status !== 'playing') return failedMutation(state, 'game-over');
+  if (!Number.isInteger(state.hammersRemaining) || state.hammersRemaining < 0 || state.hammersRemaining > HAMMER_CHARGES) {
+    return failedMutation(state, 'invalid-hammers');
+  }
+  if (state.hammersRemaining === 0) return failedMutation(state, 'no-hammers');
+  const target = findPiece(state, pieceId);
+  if (!target) return failedMutation(state, 'piece-not-found');
+
+  const events = [];
+  const pieces = state.pieces.filter((piece) => piece.id !== pieceId).map(clonePiece);
+  addSnapshotEvent(events, { type: 'hammer', pieceId }, pieces);
+  const idFactory = makeIdFactory(state._nextId ?? 1);
+  const physics = resolvePhysics(pieces, state, events, idFactory.next);
+  const nextState = {
+    ...state,
+    pieces: physics.pieces,
+    score: state.score + physics.score,
+    hammersRemaining: state.hammersRemaining - 1,
+    _nextId: idFactory.value(),
+    _witness: null,
+  };
+  if (physics.score > 0) {
+    nextState._droughtTurns = 0;
+    nextState._droughtRescueIssued = false;
+  }
+
+  if (topOccupied(nextState.pieces)) {
+    nextState.status = 'gameover';
+    addSnapshotEvent(events, { type: 'gameover', reason: 'top-overflow' }, nextState.pieces);
+    return { state: nextState, events, changed: true, reason: 'top-overflow' };
+  }
+
+  if (nextState.pieces.length === 0) {
+    insertRowAtBottom(nextState, state.nextRow);
+    addSnapshotEvent(events, { type: 'refill', rows: 1 }, nextState.pieces);
+    const doubleIds = makeIdFactory(nextState._nextId);
+    doubleSingleRow(nextState, doubleIds.next, events);
+    nextState._nextId = doubleIds.value();
+    const random = createRandom(state._rng);
+    const selection = selectTrialPreview(nextState, random);
+    nextState.nextRow = selection.row;
+    nextState.nextRowKind = selection.kind;
+    nextState.skipNextRise = selection.skipNextRise;
+    nextState._debutRowsReserved = selection.debutRowsReserved;
+    nextState._droughtRescueIssued = selection.droughtRescueIssued;
+    nextState._witness = selection.witness;
+    nextState._rng = selection.rngState;
+    return { state: nextState, events, changed: true, reason: null, doubled: 'after-rise' };
+  }
+
+  nextState._witness = findHeldWitness(nextState);
+  return { state: nextState, events, changed: true, reason: null };
 }
 
 // ---------------------------------------------------------------------------

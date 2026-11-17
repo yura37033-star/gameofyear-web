@@ -8,7 +8,7 @@
 // continue differently; old records are then rejected and a new game starts (the best score
 // is a separate record and survives). The golden test in tests/persistence.test.mjs fails
 // with that instruction when such a change slips in.
-import { HAMMER_CHARGES, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece } from './game.mjs?v=hammer-8eeac2407a';
+import { HAMMER_CHARGES, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece } from './game.mjs?v=controls-bf3253fff4';
 
 export const SCHEMA_VERSION = 1;
 export const RULES_VERSION = 1;

@@ -3,7 +3,7 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'b1-573199a';
+export const BUILD_ID = 'hammer-8eeac2407a';
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones
 
 export function createJournal() {
@@ -45,7 +45,7 @@ function colorCount(state) {
 
 export function startGameLog(journal, { seed, mode, startedAt, startedLabel, device, build = BUILD_ID } = {}) {
   const previous = latestGame(journal);
-  if (previous && !previous.end && previous.turns.length === 0) journal.games.pop(); // an untouched game is not worth a journal slot
+  if (previous && !previous.end && previous.turns.length === 0 && !previous.hammers?.length) journal.games.pop(); // an untouched game is not worth a journal slot
   else if (previous && !previous.end) previous.end = { reason: 'abandoned', endedAt: startedAt ?? null, score: null };
   const game = {
     build: String(build), seed: seed >>> 0, mode: String(mode ?? ''), startedAt: startedAt ?? null,
@@ -99,10 +99,49 @@ export function recordTurn(journal, {
   return turn;
 }
 
+// A hammer is a successful bonus action outside the ordinary turn counter.
+// Keep it separate from moves/rotations and retain only primitive values.
+export function recordHammer(journal, { before, after, result } = {}) {
+  const game = latestGame(journal);
+  if (!game || game.end || (game.hammers?.length ?? 0) >= 3 || !before || !after || before.turn !== after.turn) return null;
+  const events = result?.events ?? [];
+  const hammer = events[0];
+  if (hammer?.type !== 'hammer' || !Array.isArray(hammer.pieces)) return null;
+  if (!Number.isSafeInteger(after.hammersRemaining) || after.hammersRemaining < 0 || after.hammersRemaining > 2) return null;
+  const target = before.pieces?.find((item) => item.id === hammer.pieceId);
+  if (!target || !Array.isArray(target.cells) || target.cells.length < 1 || target.cells.length > 4) return null;
+
+  let rows = 0;
+  for (const event of events) if (event.type === 'clear' && Array.isArray(event.rows)) rows += event.rows.length;
+  const gameOver = events.find((event) => event.type === 'gameover');
+  const entry = {
+    n: after.turn,
+    pieceLength: target.cells.length,
+    score: after.score,
+    gain: after.score - before.score,
+    rows,
+    hBefore: stackHeight(before),
+    hAfter: stackHeight(after),
+    refill: events.some((event) => event.type === 'refill'),
+    colors: colorCount(after),
+    remaining: after.hammersRemaining,
+    over: gameOver ? (gameOver.reason ?? 'top-row') : null,
+  };
+  (game.hammers ??= []).push(entry);
+  return entry;
+}
+
+function latestAction(turns, hammers) {
+  const turn = turns.at(-1) ?? null;
+  const hammer = hammers.at(-1) ?? null;
+  // Hammer follows the ordinary move when both actions share the same turn number.
+  return hammer && (!turn || hammer.n >= turn.n) ? hammer : turn;
+}
+
 export function finishGameLog(journal, finalState, { endedAt = null } = {}) {
   const game = latestGame(journal);
   if (!game || game.end) return null;
-  const last = game.turns.at(-1);
+  const last = latestAction(game.turns, game.hammers ?? []);
   const reason = last?.over ?? (finalState?.status === 'gameover' ? 'top-row' : 'abandoned');
   game.end = { reason, endedAt, score: finalState?.score ?? last?.score ?? 0 };
   return game;
@@ -110,17 +149,23 @@ export function finishGameLog(journal, finalState, { endedAt = null } = {}) {
 
 export function summarizeGame(game) {
   const turns = game.turns;
+  const hammers = game.hammers ?? [];
   const first = (predicate) => turns.find(predicate)?.n ?? null;
   const durationMs = game.end?.endedAt != null && game.startedAt != null ? game.end.endedAt - game.startedAt : null;
-  return {
+  const last = latestAction(turns, hammers);
+  const earliest = (...values) => {
+    const candidates = values.filter((value) => value != null);
+    return candidates.length ? Math.min(...candidates) : null;
+  };
+  const summary = {
     build: game.build, seed: game.seed, mode: game.mode, startedAt: game.startedAt, device: game.device,
     turns: turns.length,
-    score: game.end?.score ?? turns.at(-1)?.score ?? 0,
-    rows: turns.reduce((sum, turn) => sum + turn.rows, 0),
+    score: game.end?.score ?? last?.score ?? 0,
+    rows: turns.reduce((sum, turn) => sum + turn.rows, 0) + hammers.reduce((sum, hammer) => sum + hammer.rows, 0),
     reason: game.end?.reason ?? 'playing',
-    maxStack: turns.reduce((max, turn) => Math.max(max, turn.hBefore, turn.hAfter), 0),
-    firstClear: first((turn) => turn.rows > 0),
-    secondColor: first((turn) => turn.colors > 1),
+    maxStack: Math.max(turns.reduce((max, turn) => Math.max(max, turn.hBefore, turn.hAfter), 0), hammers.reduce((max, hammer) => Math.max(max, hammer.hBefore, hammer.hAfter), 0)),
+    firstClear: earliest(first((turn) => turn.rows > 0), hammers.find((hammer) => hammer.rows > 0)?.n),
+    secondColor: earliest(first((turn) => turn.colors > 1), hammers.find((hammer) => hammer.colors > 1)?.n),
     rotations: turns.filter((turn) => turn.kind === 'rotate').length,
     hints: turns.reduce((sum, turn) => sum + turn.hints, 0),
     rescueRows: turns.filter((turn) => turn.rescueInserted).length,
@@ -128,6 +173,11 @@ export function summarizeGame(game) {
     pauseTurn: first((turn) => turn.pause),
     durationMs,
   };
+  if (hammers.length) {
+    summary.hammers = hammers.length;
+    summary.hammerRows = hammers.reduce((sum, hammer) => sum + hammer.rows, 0);
+  }
+  return summary;
 }
 
 export const LEGEND = 'L n move sec +gain rN h<before>><after> events next cN HN[f] | '
@@ -159,6 +209,36 @@ export function formatTurn(turn) {
   ].join(' ');
 }
 
+export function formatHammer(hammer) {
+  return `B${hammer.n} x${hammer.pieceLength} +${hammer.gain} r${hammer.rows} h${hammer.hBefore}>${hammer.hAfter}${hammer.refill ? ' F' : ''}${hammer.over ? ' X' : ''} left=${hammer.remaining}`;
+}
+
+function hasHammers(game) { return (game.hammers?.length ?? 0) > 0; }
+
+function hammerLegend() {
+  return 'B<n> x<size> +gain rN h<before>><after> F refill, X game over, left=remaining';
+}
+
+function reportActions(game) {
+  const lines = [];
+  let turnIndex = 0;
+  let hammerIndex = 0;
+  const hammers = game.hammers ?? [];
+  while (turnIndex < game.turns.length || hammerIndex < hammers.length) {
+    const turn = game.turns[turnIndex];
+    const hammer = hammers[hammerIndex];
+    // A hammer follows the preceding normal action when both share a turn number.
+    if (hammer && (!turn || hammer.n < turn.n)) {
+      lines.push(formatHammer(hammer));
+      hammerIndex += 1;
+    } else {
+      lines.push(formatTurn(turn));
+      turnIndex += 1;
+    }
+  }
+  return lines;
+}
+
 export function formatHeader(game) {
   const s = summarizeGame(game);
   const orDash = (value) => value ?? '-';
@@ -166,13 +246,14 @@ export function formatHeader(game) {
     + ` | turns=${s.turns} score=${s.score} rows=${s.rows} end=${s.reason} hmax=${s.maxStack}`
     + ` clear1=${orDash(s.firstClear)} col2=${orDash(s.secondColor)} rot=${s.rotations} hint=${s.hints}`
     + ` resc=${s.rescueRows} dbl=${s.doublings} pause=${orDash(s.pauseTurn)}`
+    + (s.hammers ? ` hammer=${s.hammers} hrows=${s.hammerRows}` : '')
     + ` dur=${s.durationMs == null ? '-' : `${Math.round(s.durationMs / 1000)}s`} dev=${s.device}`;
 }
 
 export function formatReport(game, { legend = true } = {}) {
   const lines = [];
-  if (legend) lines.push(LEGEND);
-  lines.push(formatHeader(game), ...game.turns.map(formatTurn));
+  if (legend) lines.push(hasHammers(game) ? `${LEGEND} | hammer: ${hammerLegend()}` : LEGEND);
+  lines.push(formatHeader(game), ...reportActions(game));
   return `${lines.join('\n')}\n`;
 }
 
@@ -180,7 +261,8 @@ export function formatReport(game, { legend = true } = {}) {
 export function formatAll(journal) {
   const games = [...journal.games].reverse();
   if (!games.length) return `${LEGEND}\n`;
-  return `${LEGEND}\n${games.map((game) => formatReport(game, { legend: false })).join('\n')}`;
+  const legend = games.some(hasHammers) ? `${LEGEND} | hammer: ${hammerLegend()}` : LEGEND;
+  return `${legend}\n${games.map((game) => formatReport(game, { legend: false })).join('\n')}`;
 }
 
 // --- Persistence (P1): the journal is stored as primitives only. ---
@@ -214,7 +296,8 @@ function importTurn(turn) {
 }
 
 function importGame(game) {
-  if (!onlyKeys(game, ['build', 'seed', 'mode', 'startedAt', 'startedLabel', 'device', 'turns', 'end'])) return null;
+  const { hammers, ...baseGame } = game ?? {};
+  if (!onlyKeys(baseGame, ['build', 'seed', 'mode', 'startedAt', 'startedLabel', 'device', 'turns', 'end'])) return null;
   if (!isText(game.build, 40) || !isText(game.mode, 40) || !isText(game.device, 80)) return null;
   if (!Number.isSafeInteger(game.seed) || game.seed < 0 || game.seed > 0xFFFFFFFF) return null;
   if (game.startedAt !== null && !(Number.isSafeInteger(game.startedAt) && game.startedAt >= 0)) return null;
@@ -226,6 +309,20 @@ function importGame(game) {
     if (!imported) return null;
     turns.push(imported);
   }
+  let importedHammers;
+  if (hammers !== undefined) {
+    if (!Array.isArray(hammers) || hammers.length > 3) return null;
+    importedHammers = [];
+    for (const hammer of hammers) {
+      if (!onlyKeys(hammer, ['n', 'pieceLength', 'score', 'gain', 'rows', 'hBefore', 'hAfter', 'refill', 'colors', 'remaining', 'over'])) return null;
+      if (!['n', 'pieceLength', 'score', 'rows', 'hBefore', 'hAfter', 'colors', 'remaining'].every((key) => isCount(hammer[key]))) return null;
+      if (!isCount(hammer.gain) || hammer.pieceLength < 1 || hammer.pieceLength > 4 || hammer.remaining > 2 || hammer.colors > 4) return null;
+      if (typeof hammer.refill !== 'boolean') return null;
+      if (hammer.over !== null && !isText(hammer.over, 24)) return null;
+      if (importedHammers.length && hammer.n < importedHammers.at(-1).n) return null;
+      importedHammers.push({ ...hammer });
+    }
+  }
   let end = null;
   if (game.end !== null) {
     if (!onlyKeys(game.end, ['reason', 'endedAt', 'score']) || !isText(game.end.reason, 24)) return null;
@@ -233,10 +330,12 @@ function importGame(game) {
     if (game.end.score !== null && !isCount(game.end.score)) return null;
     end = { reason: game.end.reason, endedAt: game.end.endedAt, score: game.end.score };
   }
-  return {
+  const imported = {
     build: game.build, seed: game.seed, mode: game.mode, startedAt: game.startedAt, startedLabel: game.startedLabel,
     device: game.device, turns, end,
   };
+  if (importedHammers !== undefined) imported.hammers = importedHammers;
+  return imported;
 }
 
 // Plain JSON-safe copy of the newest `maxGames` games (oldest first). Never throws on a well-formed journal.
