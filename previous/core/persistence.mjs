@@ -8,7 +8,10 @@
 // continue differently; old records are then rejected and a new game starts (the best score
 // is a separate record and survives). The golden test in tests/persistence.test.mjs fails
 // with that instruction when such a change slips in.
-import { HAMMER_CHARGES, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece } from './game.mjs?v=controls-bf3253fff4';
+import {
+  HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
+  movePieceAlongPath, previewMovePath, previewRotation, rotatePiece,
+} from './game.mjs?v=rainbow-d6dc18844b';
 
 export const SCHEMA_VERSION = 1;
 export const RULES_VERSION = 1;
@@ -69,6 +72,9 @@ function serializeWitness(witness) {
     continuationRng: witness.continuationRng,
     continuationKind: witness.continuationKind,
     continuationDebutRowsReserved: witness.continuationDebutRowsReserved,
+    continuationRowsPrepared: witness.continuationRowsPrepared,
+    continuationRainbowRows: [...witness.continuationRainbowRows],
+    continuationRainbowFirstDone: witness.continuationRainbowFirstDone,
   };
 }
 
@@ -100,6 +106,9 @@ export function serializeGame(state, { bestAtStart = 0, savedAt = 0 } = {}) {
     out._debutRowsReserved = state._debutRowsReserved ?? 0;
     out._droughtTurns = state._droughtTurns ?? 0;
     out._droughtRescueIssued = state._droughtRescueIssued === true;
+    out._rowsPrepared = state._rowsPrepared ?? 0;
+    out._rainbowRows = [...(state._rainbowRows ?? [])];
+    out._rainbowFirstDone = state._rainbowFirstDone === true;
   }
   out._rng = state._rng;
   out._nextId = state._nextId;
@@ -135,17 +144,43 @@ export function parseBest(value) {
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
-function validateRow(row, cols, palette) {
+// A rainbow strip may appear only in a trial row: one strip of 2-4 cells next to at least one ordinary segment.
+function validateRow(row, cols, palette, allowRainbow = false) {
   need(Array.isArray(row) && row.length >= 1 && row.length <= cols, 'row-size');
   let cursor = 0;
-  return row.map((segment) => {
+  let rainbowSegments = 0;
+  const result = row.map((segment) => {
     onlyKeys(segment, ['x', 'length', 'color']);
     need(isInt(segment.x, 0, cols - 1) && isInt(segment.length, 1, MAX_PIECE_CELLS), 'row-segment');
     need(segment.x >= cursor && segment.x + segment.length <= cols, 'row-overlap');
-    need(palette.includes(segment.color), 'row-color');
+    if (allowRainbow && segment.color === RAINBOW_COLOR) {
+      rainbowSegments += 1;
+      need(segment.length >= RAINBOW_MIN_LENGTH && segment.length <= RAINBOW_MAX_LENGTH, 'row-rainbow-length');
+    } else {
+      need(palette.includes(segment.color), 'row-color');
+    }
     cursor = segment.x + segment.length;
     return { x: segment.x, length: segment.length, color: segment.color };
   });
+  need(rainbowSegments <= 1, 'row-rainbow-count');
+  need(rainbowSegments === 0 || result.length >= 2, 'row-rainbow-only');
+  return result;
+}
+
+const rowHasRainbow = (row) => row.some((segment) => segment.color === RAINBOW_COLOR);
+
+// Counters of the rainbow limit: the latest appearances (at most RAINBOW_MAX_IN_WINDOW) (ascending row numbers), the first-appearance flag and
+// the number of prepared rows. `rowsPrepared` > every listed row; gaps respect the minimum spacing.
+function validateRainbowCounters({ rowsPrepared, rainbowRows, firstDone }, reasonPrefix) {
+  need(isInt(rowsPrepared), `${reasonPrefix}rows-prepared`);
+  need(Array.isArray(rainbowRows) && rainbowRows.length <= RAINBOW_MAX_IN_WINDOW, `${reasonPrefix}rainbow-rows`);
+  rainbowRows.forEach((value, index) => {
+    need(isInt(value) && value < rowsPrepared, `${reasonPrefix}rainbow-rows`);
+    need(index === 0 || value - rainbowRows[index - 1] > RAINBOW_MIN_BETWEEN, `${reasonPrefix}rainbow-rows`);
+  });
+  need(typeof firstDone === 'boolean', `${reasonPrefix}rainbow-first`);
+  need(rainbowRows.length === 0 || firstDone, `${reasonPrefix}rainbow-first`);
+  return { rowsPrepared, rainbowRows: [...rainbowRows], firstDone };
 }
 
 function validateCells(cells, cols, rows, lengthMin = 1) {
@@ -165,7 +200,7 @@ function isStraightLine(cells) {
   return (maxX - minX + 1) * (maxY - minY + 1) === cells.length;
 }
 
-function validatePieces(pieces, cols, rows, palette) {
+function validatePieces(pieces, cols, rows, palette, allowRainbow = false) {
   need(Array.isArray(pieces) && pieces.length <= MAX_PIECES, 'pieces-size');
   const ids = new Set();
   const occupied = new Set();
@@ -176,7 +211,7 @@ function validatePieces(pieces, cols, rows, palette) {
     need(!ids.has(piece.id), 'piece-id-duplicate');
     ids.add(piece.id);
     maxId = Math.max(maxId, Number(piece.id.slice(1)));
-    need(palette.includes(piece.color), 'piece-color');
+    need(palette.includes(piece.color) || (allowRainbow && piece.color === RAINBOW_COLOR), 'piece-color');
     const cells = validateCells(piece.cells, cols, rows);
     need(isStraightLine(cells), 'piece-shape');
     for (const cell of cells) {
@@ -228,21 +263,56 @@ function validateWitness(witness, context) {
     return { first: validateSignature(witness.first, context), steps: 1 };
   }
   onlyKeys(witness, ['steps', 'first', 'second', 'continuationMode', 'continuationRow', 'continuationRng',
-    'continuationKind', 'continuationDebutRowsReserved']);
+    'continuationKind', 'continuationDebutRowsReserved'],
+  ['continuationRowsPrepared', 'continuationRainbowRows', 'continuationRainbowFirstDone']);
   need(witness.continuationMode === 'reserved' || witness.continuationMode === 'generated', 'witness-mode');
   need(witness.continuationKind === 'regular' || witness.continuationKind === 'rescue', 'witness-kind');
   need(isUint32(witness.continuationRng), 'witness-rng');
   need(isInt(witness.continuationDebutRowsReserved, 0, MAX_DEBUT_ROWS), 'witness-debut');
+  // The three rainbow counters are optional on read: a witness saved before the strip existed continues
+  // from the state's own counters (one more prepared row when the continuation row is newly generated).
+  const hasCounters = ['continuationRowsPrepared', 'continuationRainbowRows', 'continuationRainbowFirstDone']
+    .map((key) => Object.hasOwn(witness, key));
+  need(hasCounters.every(Boolean) || !hasCounters.some(Boolean), 'witness-rainbow-keys');
+  const counters = hasCounters[0]
+    ? validateRainbowCounters({
+      rowsPrepared: witness.continuationRowsPrepared,
+      rainbowRows: witness.continuationRainbowRows,
+      firstDone: witness.continuationRainbowFirstDone,
+    }, 'witness-')
+    : {
+      rowsPrepared: context.counters.rowsPrepared + (witness.continuationMode === 'generated' ? 1 : 0),
+      rainbowRows: [...context.counters.rainbowRows],
+      firstDone: context.counters.firstDone,
+    };
   return {
     first: validateSignature(witness.first, context),
     second: validateSignature(witness.second, { ...context, idLimit: context.idLimit + 64 }),
     steps: 2,
-    continuationRow: validateRow(witness.continuationRow, context.cols, context.palette),
+    continuationRow: validateRow(witness.continuationRow, context.cols, context.palette, true),
     continuationRng: witness.continuationRng,
     continuationKind: witness.continuationKind,
     continuationMode: witness.continuationMode,
     continuationDebutRowsReserved: witness.continuationDebutRowsReserved,
+    continuationRowsPrepared: counters.rowsPrepared,
+    continuationRainbowRows: counters.rainbowRows,
+    continuationRainbowFirstDone: counters.firstDone,
   };
+}
+
+// The continuation counters must follow from the state's own: a reserved row is the one already shown, a generated row
+// is one more prepared row that either carries a strip (and is then the newest appearance) or leaves them as they are.
+function checkWitnessRainbow(state, witness) {
+  const { _rowsPrepared: prepared, _rainbowRows: recent } = state;
+  const generated = witness.continuationMode === 'generated';
+  need(witness.continuationRowsPrepared === prepared + (generated ? 1 : 0), 'witness-rainbow-counters');
+  const placed = rowHasRainbow(witness.continuationRow);
+  const expected = generated && placed ? [...recent, prepared].slice(-RAINBOW_MAX_IN_WINDOW) : recent;
+  need(JSON.stringify(witness.continuationRainbowRows) === JSON.stringify(expected), 'witness-rainbow-counters');
+  need(witness.continuationRainbowFirstDone === (state._rainbowFirstDone || expected.length > 0), 'witness-rainbow-counters');
+  need(!placed || witness.continuationKind === 'regular', 'witness-rainbow-counters');
+  need(!placed || witness.continuationRainbowRows.at(-1) === witness.continuationRowsPrepared - 1, 'witness-rainbow-counters');
+  if (placed) need(state.score >= RAINBOW_SCORE, 'witness-rainbow-score');
 }
 
 function actionFromSignature(state, signature) {
@@ -278,7 +348,10 @@ function witnessReplays(state) {
   const next = result.state;
   if (JSON.stringify(next.nextRow) !== JSON.stringify(witness.continuationRow)
     || next.nextRowKind !== witness.continuationKind || next._rng !== witness.continuationRng
-    || next._debutRowsReserved !== witness.continuationDebutRowsReserved) return false;
+    || next._debutRowsReserved !== witness.continuationDebutRowsReserved
+    || next._rowsPrepared !== witness.continuationRowsPrepared
+    || JSON.stringify(next._rainbowRows) !== JSON.stringify(witness.continuationRainbowRows)
+    || next._rainbowFirstDone !== witness.continuationRainbowFirstDone) return false;
   return actionFromSignature(next, witness.second) !== null;
 }
 
@@ -289,7 +362,7 @@ function validateState(raw) {
   onlyKeys(raw,
     ['cols', 'rows', 'palette', 'pieces', 'nextRow', 'nextRowKind', 'score', 'turn', 'status', 'trial',
       'skipNextRise', 'skipRiseUsed', '_trialColor', '_rng', '_nextId', ...(trial ? ['_debutRowsReserved', '_droughtTurns', '_droughtRescueIssued', '_witness'] : [])],
-    trial ? ['hammersRemaining'] : ['_witness']);
+    trial ? ['hammersRemaining', '_rowsPrepared', '_rainbowRows', '_rainbowFirstDone'] : ['_witness']);
   const size = trial ? TRIAL_SIZE : CLASSIC_SIZE;
   need(raw.cols === size.cols && raw.rows === size.rows, 'size');
   const { cols, rows } = size;
@@ -306,9 +379,9 @@ function validateState(raw) {
   need(isInt(raw._nextId, 1, MAX_NUMBER), 'next-id');
   if (trial) need(typeof raw._trialColor === 'string' && palette.includes(raw._trialColor), 'trial-color');
   else need(raw._trialColor === null, 'trial-color');
-  const { pieces, maxId } = validatePieces(raw.pieces, cols, rows, palette);
+  const { pieces, maxId } = validatePieces(raw.pieces, cols, rows, palette, trial);
   need(raw._nextId > maxId, 'next-id-low');
-  const nextRow = validateRow(raw.nextRow, cols, palette);
+  const nextRow = validateRow(raw.nextRow, cols, palette, trial);
   need(!(raw.skipNextRise && raw.skipRiseUsed), 'skip-flags');
   need(!(raw.skipNextRise && raw.nextRowKind === 'rescue'), 'skip-rescue');
   need(trial || (!raw.skipNextRise && !raw.skipRiseUsed && raw.nextRowKind === 'regular'), 'classic-flags');
@@ -333,13 +406,32 @@ function validateState(raw) {
     state.hammersRemaining = hammersRemaining;
     state._droughtTurns = raw._droughtTurns;
     state._droughtRescueIssued = raw._droughtRescueIssued;
+
+    // Rainbow counters are optional on read: a save made before the strip existed starts counting at its first new row.
+    const counters = validateRainbowCounters({
+      rowsPrepared: raw._rowsPrepared === undefined ? 0 : raw._rowsPrepared,
+      rainbowRows: raw._rainbowRows === undefined ? [] : raw._rainbowRows,
+      firstDone: raw._rainbowFirstDone === undefined ? false : raw._rainbowFirstDone,
+    }, '');
+    const hasRainbow = pieces.some((piece) => piece.color === RAINBOW_COLOR) || rowHasRainbow(nextRow);
+    need(!hasRainbow || counters.firstDone, 'rainbow-first');
+    need(!counters.firstDone || raw.score >= RAINBOW_SCORE, 'rainbow-score');
+    // The shown row is always the newest prepared row, so a strip in it is the newest appearance.
+    need(!rowHasRainbow(nextRow) || (raw.nextRowKind === 'regular' && counters.rainbowRows.at(-1) === counters.rowsPrepared - 1), 'rainbow-next-row');
+    state._rowsPrepared = counters.rowsPrepared;
+    state._rainbowRows = counters.rainbowRows;
+    state._rainbowFirstDone = counters.firstDone;
   }
   state._rng = raw._rng;
   state._nextId = raw._nextId;
   if (trial) {
-    state._witness = validateWitness(raw._witness, { cols, rows, palette, idLimit: raw._nextId });
+    state._witness = validateWitness(raw._witness, {
+      cols, rows, palette, idLimit: raw._nextId,
+      counters: { rowsPrepared: state._rowsPrepared, rainbowRows: state._rainbowRows, firstDone: state._rainbowFirstDone },
+    });
     if (state._witness?.steps === 2) {
       need(state._witness.continuationDebutRowsReserved === 0 || raw.score >= COLOR_DEBUT_SCORE, 'witness-debut-score');
+      checkWitnessRainbow(state, state._witness);
     }
     if (state.status === 'playing') need(witnessReplays(state), 'witness-replay');
   } else {

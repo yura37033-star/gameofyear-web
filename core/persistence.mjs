@@ -5,16 +5,16 @@
 // generator.mjs, the colour curve and debut constants, the drought/rescue constants, the
 // search budgets and candidate ordering in game.mjs (legalTrialActions, selectTrialPreview,
 // findTrialWitness, suggestAction). Bump it whenever a change makes the same stored state
-// continue differently; old records are then rejected and a new game starts (the best score
-// is a separate record and survives). The golden test in tests/persistence.test.mjs fails
-// with that instruction when such a change slips in.
+// continue differently. Explicit migrations preserve compatible records. The golden test
+// in tests/persistence.test.mjs detects changes in a game's continuation.
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   movePieceAlongPath, previewMovePath, previewRotation, rotatePiece,
-} from './game.mjs?v=rainbow-d6dc18844b';
+} from './game.mjs?v=rainbow-8b400d4828';
 
 export const SCHEMA_VERSION = 1;
-export const RULES_VERSION = 1;
+export const RULES_VERSION = 2;
+const PREVIOUS_RULES_VERSION = 1;
 export const MAX_GAME_RECORD_BYTES = 64 * 1024;
 export const MAX_PIECES = 200;
 export const TRIAL_SIZE = Object.freeze({ cols: 8, rows: 12 });
@@ -355,7 +355,7 @@ function witnessReplays(state) {
   return actionFromSignature(next, witness.second) !== null;
 }
 
-function validateState(raw) {
+function validateState(raw, migrating) {
   need(isObject(raw), 'state');
   const trial = raw.trial;
   need(typeof trial === 'boolean', 'trial');
@@ -433,7 +433,11 @@ function validateState(raw) {
       need(state._witness.continuationDebutRowsReserved === 0 || raw.score >= COLOR_DEBUT_SCORE, 'witness-debut-score');
       checkWitnessRainbow(state, state._witness);
     }
-    if (state.status === 'playing') need(witnessReplays(state), 'witness-replay');
+    if (state.status === 'playing' && !witnessReplays(state)) {
+      // After the rainbow unlock, the new clearing rule can invalidate a v1 hint.
+      need(migrating && state.score >= RAINBOW_SCORE, 'witness-replay');
+      state._witness = null;
+    }
   } else {
     need(raw._witness === undefined || raw._witness === null, 'witness');
     if (raw._witness === null) state._witness = null;
@@ -445,12 +449,13 @@ export function parseGame(value) {
   try {
     onlyKeys(value, ['schemaVersion', 'rulesVersion', 'savedAt', 'bestAtStart', 'state']);
     need(value.schemaVersion === SCHEMA_VERSION, 'schema-version');
-    need(value.rulesVersion === RULES_VERSION, 'rules-version');
+    const migrating = value.rulesVersion === PREVIOUS_RULES_VERSION;
+    need(migrating || value.rulesVersion === RULES_VERSION, 'rules-version');
     need(isInt(value.savedAt, 0, Number.MAX_SAFE_INTEGER) && isInt(value.bestAtStart), 'record-numbers');
     need(isObject(value.state) && Array.isArray(value.state.pieces) && value.state.pieces.length <= MAX_PIECES, 'pieces-size');
     need(JSON.stringify(value).length <= MAX_GAME_RECORD_BYTES, 'too-large');
-    const state = validateState(value.state);
-    return { ok: true, state, bestAtStart: value.bestAtStart, savedAt: value.savedAt };
+    const state = validateState(value.state, migrating);
+    return { ok: true, state, bestAtStart: value.bestAtStart, savedAt: value.savedAt, migrated: migrating };
   } catch (error) {
     return fail(error instanceof Invalid ? error.message : 'invalid');
   }

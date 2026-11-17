@@ -1,8 +1,8 @@
-import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=controls-bf3253fff4';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=controls-bf3253fff4';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=controls-bf3253fff4';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=controls-bf3253fff4';
-import { HAMMER_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=controls-bf3253fff4';
+import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=rainbow-d6dc18844b';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=rainbow-d6dc18844b';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=rainbow-d6dc18844b';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=rainbow-d6dc18844b';
+import { HAMMER_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=rainbow-d6dc18844b';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -158,6 +158,18 @@ function roundRectPath(context, x, y, w, h, r) {
   context.arcTo(x, y, x + w, y, radius);
   context.closePath();
 }
+const RAINBOW_BANDS = ['#ff6574', '#ffc56b', '#f6ee73', '#66e5c5', '#5d8fe8', '#c58bff'];
+// Rainbow strip: hard-edged diagonal bands, the same on the board and in the next-row block.
+function rainbowGradient(context, left, top, width, height) {
+  const band = Math.max(6, cell * .36), length = width + height;
+  const count = Math.max(RAINBOW_BANDS.length, Math.round(length / band));
+  const gradient = context.createLinearGradient(left, top, left + length / 2, top + length / 2);
+  for (let index = 0; index < count; index += 1) {
+    const color = RAINBOW_BANDS[index % RAINBOW_BANDS.length];
+    gradient.addColorStop(index / count, color); gradient.addColorStop(Math.min(1, (index + 1) / count - 1e-4), color);
+  }
+  return gradient;
+}
 function drawBar(context, x, y, width, height, color, alpha = 1, scale = 1, selected = false, canRotate = false) {
   const gap = Math.max(1, cell * .065), radius = Math.max(2, cell * .15);
   const left = x * cell + gap, top = y * cell + gap;
@@ -167,9 +179,11 @@ function drawBar(context, x, y, width, height, color, alpha = 1, scale = 1, sele
     const centerX = (x + width / 2) * cell, centerY = (y + height / 2) * cell;
     context.translate(centerX, centerY); context.scale(scale, scale); context.translate(-centerX, -centerY);
   }
-  const gradient = context.createLinearGradient(0, top, 0, top + barHeight);
-  gradient.addColorStop(0, brighten(color, 28)); gradient.addColorStop(.55, color);
-  gradient.addColorStop(1, color);
+  const gradient = color === RAINBOW_COLOR ? rainbowGradient(context, left, top, barWidth, barHeight) : context.createLinearGradient(0, top, 0, top + barHeight);
+  if (color !== RAINBOW_COLOR) {
+    gradient.addColorStop(0, brighten(color, 28)); gradient.addColorStop(.55, color);
+    gradient.addColorStop(1, color);
+  }
   context.fillStyle = gradient;
   context.beginPath(); roundRectPath(context, left, top, barWidth, barHeight, radius); context.fill();
   context.strokeStyle = selected ? '#fff5da' : canRotate ? '#d4dce8' : '#ffffff54';
@@ -491,7 +505,7 @@ async function commit(result, initialScene = scene) {
   const hasDouble = result.events.some((event) => event.type === 'double');
   const doubled = hasDouble && (result.events.some((event) => event.type === 'rise' || event.type === 'refill') ? 'after-rise' : 'replace');
   const hasDebutPreview = state.status === 'playing' && oldScore < COLOR_DEBUT_SCORE
-    && state.score >= COLOR_DEBUT_SCORE && state.nextRow.some((segment) => segment.color !== state._trialColor);
+    && state.score >= COLOR_DEBUT_SCORE && state.nextRow.some((segment) => segment.color !== state._trialColor && segment.color !== RAINBOW_COLOR);
   let didRise = false;
   let waitingForDebut = false;
   for (const phase of buildPlayback(initialScene, result.events)) {

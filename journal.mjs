@@ -3,7 +3,7 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'rainbow-d6dc18844b';
+export const BUILD_ID = 'rainbow-8b400d4828';
 // Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
 const RAINBOW_COLOR = 'rainbow';
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones

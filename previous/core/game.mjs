@@ -1,9 +1,19 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=controls-bf3253fff4';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=rainbow-d6dc18844b';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
+// Rainbow strip (DEMO_PLAN.md section 13). RAINBOW_COLOR is not a palette colour: it is a
+// wildcard value of segment/piece `color` and is never counted as a colour of its own.
+export const RAINBOW_COLOR = 'rainbow';
+export const RAINBOW_SCORE = 4000;
+export const RAINBOW_CHANCE = 0.2;
+export const RAINBOW_WINDOW = 20; // at most RAINBOW_MAX_IN_WINDOW in any 20 consecutive prepared rows
+export const RAINBOW_MAX_IN_WINDOW = 3;
+export const RAINBOW_MIN_BETWEEN = 3; // other prepared rows between two appearances
+export const RAINBOW_MIN_LENGTH = 2;
+export const RAINBOW_MAX_LENGTH = 4;
 const DROUGHT_RESCUE_TURNS = 6;
 
 const cloneCell = ({ x, y }) => ({ x, y });
@@ -313,7 +323,11 @@ function findClearableRows(pieces, cols, rows) {
     for (const cell of piece.cells) byRow[cell.y].set(cell.x, piece.color);
   }
   return byRow.flatMap((cells, y) => {
-    if (cells.size !== cols || new Set(cells.values()).size !== 1) return [];
+    if (cells.size !== cols) return [];
+    // A rainbow cell matches any colour; a row of rainbow cells only also clears.
+    const colors = new Set(cells.values());
+    colors.delete(RAINBOW_COLOR);
+    if (colors.size > 1) return [];
     return [y];
   });
 }
@@ -438,7 +452,7 @@ function chooseCompatibleGaps(state, row, seed) {
     });
     let count = 0;
     for (const item of settle([...shifted, ...inserted], state.rows, null)) {
-      if (item.color !== rowColor) count += item.cells.filter((cell) => cell.y === state.rows - 1).length;
+      if (item.color !== rowColor && item.color !== RAINBOW_COLOR) count += item.cells.filter((cell) => cell.y === state.rows - 1).length;
     }
     return count;
   };
@@ -487,6 +501,53 @@ function trialRowColorMode(state, debutCount = state._debutRowsReserved ?? 0) {
 
 function copyRow(row) {
   return row.map((segment) => ({ ...segment }));
+}
+
+// ---------------------------------------------------------------------------
+// Rainbow strip planning. The decision for the row about to be prepared comes from its own
+// reproducible stream (root state of the generator at the start of the preparation and the
+// row number); it never consumes the game's main generator, so rows, layouts and every later
+// draw stay exactly as they were before the strip existed.
+// ---------------------------------------------------------------------------
+const rainbowSuitableSegments = (row) => (row.length >= 2
+  ? row.flatMap((segment, index) => (segment.length >= RAINBOW_MIN_LENGTH && segment.length <= RAINBOW_MAX_LENGTH ? [index] : []))
+  : []);
+
+export const rowHasRainbow = (row) => Array.isArray(row) && row.some((segment) => segment.color === RAINBOW_COLOR);
+
+// null: no strip may appear in the row about to be prepared. Otherwise { index, pick }:
+// `index` is the number of this row among all prepared rows, `pick` in [0, 1) chooses the segment.
+function planRainbow(state, rootSeed) {
+  if (!state.trial || state.score < RAINBOW_SCORE) return null;
+  const index = state._rowsPrepared ?? 0;
+  const recent = state._rainbowRows ?? [];
+  if (recent.length && index - recent.at(-1) <= RAINBOW_MIN_BETWEEN) return null;
+  if (recent.length >= RAINBOW_MAX_IN_WINDOW && index - recent.at(-RAINBOW_MAX_IN_WINDOW) < RAINBOW_WINDOW) return null;
+  const stream = createRandom((rootSeed ^ Math.imul(index + 29, 0x27d4eb2f)) >>> 0);
+  stream(); stream();
+  const roll = stream();
+  const pick = stream();
+  if (state._rainbowFirstDone === true && roll >= RAINBOW_CHANCE) return null;
+  return { index, pick };
+}
+
+// Returns the row unchanged when it has no suitable segment (the appearance then does not count).
+function placeRainbow(row, plan) {
+  const suitable = plan ? rainbowSuitableSegments(row) : [];
+  if (!suitable.length) return row;
+  const chosen = suitable[Math.min(suitable.length - 1, Math.floor(plan.pick * suitable.length))];
+  return row.map((segment, index) => (index === chosen ? { ...segment, color: RAINBOW_COLOR } : { ...segment }));
+}
+
+// Counters of a state after one more row was prepared, with or without a strip.
+function rainbowCountersAfter(state, row) {
+  const placed = rowHasRainbow(row);
+  const recent = state._rainbowRows ?? [];
+  return {
+    _rowsPrepared: (state._rowsPrepared ?? 0) + 1,
+    _rainbowRows: placed ? [...recent, state._rowsPrepared ?? 0].slice(-RAINBOW_MAX_IN_WINDOW) : [...recent],
+    _rainbowFirstDone: state._rainbowFirstDone === true || placed,
+  };
 }
 
 function stackHeight(pieces, rows) {
@@ -616,11 +677,16 @@ function makePlacementPotential(state, piece) {
     const rowScores = [];
     for (const y of affectedRows) {
       const counts = new Map();
-      for (const color of rows[y].values()) counts.set(color, (counts.get(color) ?? 0) + 1);
-      for (const cell of cells) if (cell.y === y) counts.set(piece.color, (counts.get(piece.color) ?? 0) + 1);
-      const occupied = [...counts.values()].reduce((sum, count) => sum + count, 0);
-      const largest = Math.max(0, ...counts.values());
-      rowScores.push(occupied === state.cols && counts.size === 1 ? 10000 : largest * largest);
+      let wildcards = 0; // rainbow cells fit any colour and are not a colour of their own
+      const addCell = (color) => {
+        if (color === RAINBOW_COLOR) wildcards += 1;
+        else counts.set(color, (counts.get(color) ?? 0) + 1);
+      };
+      for (const color of rows[y].values()) addCell(color);
+      for (const cell of cells) if (cell.y === y) addCell(piece.color);
+      const occupied = [...counts.values()].reduce((sum, count) => sum + count, 0) + wildcards;
+      const largest = Math.max(0, ...counts.values()) + wildcards;
+      rowScores.push(occupied === state.cols && counts.size <= 1 ? 10000 : largest * largest);
     }
     return rowScores.reduce((sum, value) => sum + value, 0);
   };
@@ -763,6 +829,7 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
       continuationMode = 'reserved';
     } else {
       const random = createRandom(continuationState._rng);
+      const rootSeed = random.state;
       const debutCount = continuationState._debutRowsReserved ?? 0;
       const { baseColor, forcedSecondColor, forcedRowColor } = trialRowColorMode(continuationState, debutCount);
       continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, baseColor, forcedRowColor);
@@ -770,6 +837,8 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
         continuationRow = chooseCompatibleGaps(continuationState, continuationRow, random.state);
       }
       continuationRng = random.state;
+      continuationRow = placeRainbow(continuationRow, planRainbow(continuationState, rootSeed));
+      Object.assign(continuationState, rainbowCountersAfter(continuationState, continuationRow));
       if (forcedSecondColor) continuationState._debutRowsReserved = debutCount + 1;
       continuationState.nextRow = continuationRow;
       continuationState.nextRowKind = 'regular';
@@ -792,6 +861,9 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
           continuationKind,
           continuationMode,
           continuationDebutRowsReserved: continuationState._debutRowsReserved ?? 0,
+          continuationRowsPrepared: continuationState._rowsPrepared ?? 0,
+          continuationRainbowRows: [...(continuationState._rainbowRows ?? [])],
+          continuationRainbowFirstDone: continuationState._rainbowFirstDone === true,
         };
       }
     }
@@ -824,6 +896,10 @@ function selectTrialPreview(state, random) {
   const { baseColor, forcedSecondColor, forcedRowColor } = trialRowColorMode(state, debutCount);
   let fallbackRow = generateTrialRow(state.cols, state.palette, random, incomingTurn, state.score, baseColor, forcedRowColor);
   if (state.score >= COLOR_DEBUT_SCORE) fallbackRow = chooseCompatibleGaps(state, fallbackRow, rootSeed);
+  // The strip goes onto every ordinary candidate row before any witness search, so the search
+  // and the shown row share one composition. A candidate without a suitable segment stays plain.
+  const rainbowPlan = planRainbow(state, rootSeed);
+  fallbackRow = placeRainbow(fallbackRow, rainbowPlan);
   const attemptEasy = random() < easySelectionChance(state.score);
   const fallbackRng = random.state;
   const nearCeiling = state.rows - stackHeight(state.pieces, state.rows) <= 2;
@@ -833,6 +909,7 @@ function selectTrialPreview(state, random) {
     row, kind, skipNextRise, witness, rngState,
     debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0),
     droughtRescueIssued: (state._droughtRescueIssued ?? false) || (rescued && droughtDue),
+    ...rainbowCountersAfter(state, row),
   });
   if (!shouldSearch) return finish(fallbackRow, 'regular', false, null, fallbackRng);
 
@@ -848,9 +925,10 @@ function selectTrialPreview(state, random) {
       const candidateRandom = createRandom((rootSeed ^ Math.imul(attempt + 3, 0x9e3779b1)) >>> 0);
       row = generateTrialRow(state.cols, state.palette, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor);
       if (state.score >= COLOR_DEBUT_SCORE) row = chooseCompatibleGaps(state, row, candidateRandom.state);
+      row = placeRainbow(row, rainbowPlan);
       candidateRng = candidateRandom.state;
     }
-    const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'regular', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0) };
+    const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'regular', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0), ...rainbowCountersAfter(state, row) };
     const witness = findTrialWitness(candidate, regularBudget, firstActionPool);
     if (witness) return finish(row, 'regular', false, witness, candidateRng);
     if (regularBudget.exhausted) break;
@@ -863,7 +941,7 @@ function selectTrialPreview(state, random) {
       const candidateRandom = createRandom((rootSeed ^ Math.imul(index + 101, 0x85ebca6b)) >>> 0);
       const row = buildRescueRow(state.cols, state.palette, gaps, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor);
       const candidateRng = candidateRandom.state;
-      const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'rescue', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0) };
+      const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'rescue', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0), ...rainbowCountersAfter(state, row) };
       const witness = findTrialWitness(candidate, rescueBudget, firstActionPool);
       if (witness) return finish(row, 'rescue', false, witness, candidateRng, true);
       if (rescueBudget.exhausted) break;
@@ -871,7 +949,7 @@ function selectTrialPreview(state, random) {
   }
 
   if (attemptEasy && state.score < 1000 && !state.skipRiseUsed) {
-    const candidate = { ...state, nextRow: copyRow(fallbackRow), nextRowKind: 'regular', skipNextRise: true, _witness: null, _rng: fallbackRng };
+    const candidate = { ...state, nextRow: copyRow(fallbackRow), nextRowKind: 'regular', skipNextRise: true, _witness: null, _rng: fallbackRng, ...rainbowCountersAfter(state, fallbackRow) };
     const skipBudget = makeTrialSearchBudget(180, 2400, 4500);
     const witness = findTrialWitness(candidate, skipBudget, firstActionPool);
     if (witness) return finish(fallbackRow, 'regular', true, witness, fallbackRng);
@@ -925,6 +1003,9 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
       _debutRowsReserved: 0,
       _droughtTurns: 0,
       _droughtRescueIssued: false,
+      _rowsPrepared: 0,
+      _rainbowRows: [],
+      _rainbowFirstDone: false,
     } : {}),
     _rng: random.state,
     _nextId: Math.max(idCounter, pieces.length + 1),
@@ -940,6 +1021,9 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
   initialState.skipNextRise = selection.skipNextRise;
   initialState._debutRowsReserved = selection.debutRowsReserved;
   initialState._droughtRescueIssued = selection.droughtRescueIssued;
+  initialState._rowsPrepared = selection._rowsPrepared;
+  initialState._rainbowRows = selection._rainbowRows;
+  initialState._rainbowFirstDone = selection._rainbowFirstDone;
   initialState._witness = selection.witness;
   initialState._rng = selection.rngState;
   return initialState;
@@ -1072,6 +1156,15 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
       if (state.trial && Number.isInteger(witness.continuationDebutRowsReserved)) {
         nextState._debutRowsReserved = witness.continuationDebutRowsReserved;
       }
+      if (state.trial) {
+        if (Number.isInteger(witness.continuationRowsPrepared)) {
+          nextState._rowsPrepared = witness.continuationRowsPrepared;
+          nextState._rainbowRows = [...(witness.continuationRainbowRows ?? [])];
+          nextState._rainbowFirstDone = witness.continuationRainbowFirstDone === true;
+        } else {
+          Object.assign(nextState, rainbowCountersAfter(state, nextState.nextRow));
+        }
+      }
     } else {
       nextState._witness = null;
       const random = createRandom(rngSeed);
@@ -1084,6 +1177,9 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
         nextState._rng = selection.rngState;
         nextState._debutRowsReserved = selection.debutRowsReserved;
         nextState._droughtRescueIssued = selection.droughtRescueIssued;
+        nextState._rowsPrepared = selection._rowsPrepared;
+        nextState._rainbowRows = selection._rainbowRows;
+        nextState._rainbowFirstDone = selection._rainbowFirstDone;
       } else {
         nextState.nextRow = generateRow(state.cols, state.palette, random);
         nextState.nextRowKind = 'regular';
@@ -1168,6 +1264,9 @@ export function useHammer(state, pieceId) {
     nextState.skipNextRise = selection.skipNextRise;
     nextState._debutRowsReserved = selection.debutRowsReserved;
     nextState._droughtRescueIssued = selection.droughtRescueIssued;
+    nextState._rowsPrepared = selection._rowsPrepared;
+    nextState._rainbowRows = selection._rainbowRows;
+    nextState._rainbowFirstDone = selection._rainbowFirstDone;
     nextState._witness = selection.witness;
     nextState._rng = selection.rngState;
     return { state: nextState, events, changed: true, reason: null, doubled: 'after-rise' };
