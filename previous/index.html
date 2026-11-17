@@ -11,7 +11,7 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23101c31'/%3E%3Cpath d='M7 7h8v8H7z' fill='%235D8FE8'/%3E%3Cpath d='M17 7h8v8h-8z' fill='%23F3C969'/%3E%3Cpath d='M7 17h8v8H7z' fill='%23F3C969'/%3E%3Cpath d='M17 17h8v8h-8z' fill='%235D8FE8'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=hammer-8eeac2407a">
+  <link rel="stylesheet" href="./styles.css?v=controls-bf3253fff4">
 </head>
 <body>
   <main class="layout">
@@ -27,10 +27,7 @@
         <header class="masthead">
           <div class="brand"><div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div><span>Кольорові ряди</span></div>
           <div class="masthead-actions">
-            <button id="hammerButton" class="hammer-button" type="button" aria-pressed="false" aria-label="Молоток, залишилось 3 удари" disabled>
-              <span class="hammer-icon" aria-hidden="true">🔨</span><span class="hammer-name">Молоток</span>
-              <span id="hammerCount" class="hammer-count" aria-hidden="true">3</span>
-            </button>
+            <button id="newGameButton" class="new-game-button" type="button">Нова гра</button>
             <button id="helpButton" class="icon-button" type="button" aria-label="Як грати">?</button>
           </div>
         </header>
@@ -70,8 +67,10 @@
       <div class="toolbar">
         <button id="rotateLeftButton" class="rotate-button" type="button" aria-label="Повернути вліво" disabled><span class="rotate-icon" aria-hidden="true">↶</span>Вліво</button>
         <button id="rotateRightButton" class="rotate-button" type="button" aria-label="Повернути вправо" disabled><span class="rotate-icon" aria-hidden="true">↷</span>Вправо</button>
+        <button id="hammerButton" class="hammer-button" type="button" aria-pressed="false" aria-label="Молоток, залишилось 3 удари" disabled>
+          <span aria-hidden="true">🔨</span><span id="hammerCount" class="hammer-count" aria-hidden="true">3</span>
+        </button>
         <button id="hintButton" class="hint-button" type="button" aria-label="Підказати хід">Підказати хід</button>
-        <button id="newGameButton" class="new-game-button" type="button">Нова гра</button>
       </div>
       <p id="status" class="status" role="status" aria-live="polite">Торкнись фігури, щоб обрати.</p>
       <noscript>Для гри потрібно увімкнути JavaScript у браузері.</noscript>
@@ -81,8 +80,17 @@
   <dialog id="helpDialog" aria-labelledby="helpTitle">
     <div class="help-heading">
       <h2 id="helpTitle">Як грати</h2>
-      <button id="closeHelp" class="icon-button" type="button" aria-label="Закрити правила">×</button>
+      <button id="closeHelp" class="icon-button" type="button" aria-label="Закрити довідку">×</button>
     </div>
+    <details id="gameHistory" class="history">
+      <summary>Історія партій</summary>
+      <div class="history-content">
+        <p id="historyEmpty" class="history-empty" hidden>Журнал поки порожній.</p>
+        <ul id="historyList" class="history-list"></ul>
+        <textarea id="copyHistoryText" class="copy-text" readonly hidden rows="4" aria-label="Журнал вибраної партії для ручного копіювання"></textarea>
+        <p id="copyHistoryStatus" class="copy-status" role="status" aria-live="polite"></p>
+      </div>
+    </details>
     <ol class="rules">
       <li><b>Переміщуй фігури</b><p>Перетягни фігуру вгору, вниз або вбік вільним шляхом. Зміна позиції після відпускання коштує один хід.</p></li>
       <li><b>Повертай фігури зі світлою рамкою</b><p>Обери таку фігуру й натисни Вліво чи Вправо. Поворот — повноцінний хід, як і переміщення; за потреби фігуру підіймає до вільної позиції.</p></li>
@@ -106,6 +114,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./main.mjs?v=hammer-8eeac2407a"></script>
+  <script type="module" src="./main.mjs?v=controls-bf3253fff4"></script>
 </body>
 </html>

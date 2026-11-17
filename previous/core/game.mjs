@@ -1,4 +1,4 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=hammer-8eeac2407a';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=controls-bf3253fff4';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3;

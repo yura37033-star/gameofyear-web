@@ -1,8 +1,8 @@
-import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=hammer-8eeac2407a';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=hammer-8eeac2407a';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog } from './journal.mjs?v=hammer-8eeac2407a';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=hammer-8eeac2407a';
-import { HAMMER_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=hammer-8eeac2407a';
+import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=controls-bf3253fff4';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=controls-bf3253fff4';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=controls-bf3253fff4';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=controls-bf3253fff4';
+import { HAMMER_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=controls-bf3253fff4';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -27,9 +27,11 @@ let successfulActions = 0, rotated = false, selectHintShown = false;
 const ROTATE_IDLE_HINT = 'Торкнись фігури: зі світлою рамкою її можна й повернути.';
 const ROTATE_SELECT_HINT = 'Фігури зі світлою рамкою можна повернути кнопками Вліво / Вправо.';
 const rotationPreviews = new Map();
-// --- Journal (DEMO_PLAN 18): in memory only, outside the core; every call is wrapped so it cannot break the game.
+// --- Journal (DEMO_PLAN 18): UI-owned records with separate browser persistence.
 const journal = createJournal();
 let journalReadyAt = 0, journalHints = 0, journalLastHint = null;
+const historyDetails = $('gameHistory'), historyEmpty = $('historyEmpty'), historyList = $('historyList');
+const historyCopyArea = $('copyHistoryText'), historyCopyStatus = $('copyHistoryStatus');
 function journalSafe(action) { try { return action(); } catch { return null; } }
 function journalTime(date) {
   const pad = (n) => String(n).padStart(2, '0');
@@ -434,6 +436,7 @@ function startGame(notice = '') {
     const now = new Date();
     startGameLog(journal, { seed: gameSeed, mode: `trial ${next.cols}x${next.rows}`, startedAt: now.getTime(), startedLabel: journalTime(now), device: parseDevice(navigator.userAgent), build: BUILD_ID });
     resetCopyUi();
+    refreshHistory();
   });
   bestAtStart = best; recordBase = best;
   installState(next, notice);
@@ -468,6 +471,7 @@ async function initGame() {
       startGameLog(journal, { seed: 0, mode: `trial ${record.state.cols}x${record.state.rows} restored`, startedAt: record.savedAt, startedLabel: null, device: parseDevice(navigator.userAgent), build: BUILD_ID });
     }
     resetCopyUi();
+    refreshHistory();
   });
   installState(record.state, hasProgress(record.state) ? 'Партію відновлено.' : '', true);
   if (gameRead.legacy) persistGame();
@@ -682,39 +686,127 @@ for (const [direction, button] of Object.entries(rotationButtons)) {
 hintButton.addEventListener('click', requestHint);
 hammerButton.addEventListener('click', toggleHammer);
 // --- Copy results (DEMO_PLAN 18): clipboard write inside the click handler; read-only textarea as the fallback.
-const copyUis = {
-  result: { button: $('copyResultButton'), status: $('copyResultStatus'), area: $('copyResultText'), label: 'Скопіювати результати', build: () => { const game = latestGame(journal); return game ? formatReport(game) : ''; } },
-  all: { button: $('copyJournalButton'), status: $('copyJournalStatus'), area: $('copyJournalText'), label: 'Скопіювати журнал партій', build: () => formatAll(journal) },
+const copyGroups = {
+  result: {
+    button: $('copyResultButton'), status: $('copyResultStatus'), area: $('copyResultText'),
+    label: 'Скопіювати результати', success: 'Результати скопійовано.', fallback: 'Скопіюйте вручну.',
+    epoch: 0, timer: 0,
+  },
+  all: {
+    button: $('copyJournalButton'), status: $('copyJournalStatus'), area: $('copyJournalText'),
+    label: 'Скопіювати журнал партій', success: 'Результати скопійовано.', fallback: 'Скопіюйте вручну.',
+    epoch: 0, timer: 0,
+  },
+  history: {
+    status: historyCopyStatus, area: historyCopyArea,
+    success: 'Журнал партії скопійовано.', fallback: 'Скопіюйте журнал партії вручну.',
+    epoch: 0, timer: 0,
+  },
 };
-const copyTimers = new Map();
-let copyEpoch = 0;
-function resetCopyUi() {
-  copyEpoch++;
-  for (const ui of Object.values(copyUis)) {
-    clearTimeout(copyTimers.get(ui)); ui.button.textContent = ui.label; ui.status.textContent = ''; ui.area.hidden = true; ui.area.value = '';
-  }
+function resetCopyGroup(group) {
+  group.epoch++;
+  clearTimeout(group.timer); group.timer = 0;
+  if (group.button) group.button.textContent = group.label;
+  if (group.status) group.status.textContent = '';
+  if (group.area) { group.area.hidden = true; group.area.value = ''; }
 }
-function copyDone(ui, ok, text) {
+function resetCopyUi() { for (const group of Object.values(copyGroups)) resetCopyGroup(group); }
+function copyDone(group, ok, text, epoch) {
+  if (epoch !== group.epoch) return;
   if (ok) {
-    ui.area.hidden = true; ui.area.value = '';
-    ui.status.textContent = 'Результати скопійовано.'; ui.button.textContent = 'Скопійовано';
-    clearTimeout(copyTimers.get(ui)); copyTimers.set(ui, setTimeout(() => { ui.button.textContent = ui.label; }, 2000));
+    if (group.area) { group.area.hidden = true; group.area.value = ''; }
+    if (group.status) group.status.textContent = group.success;
+    if (group.button) {
+      group.button.textContent = 'Скопійовано';
+      group.timer = setTimeout(() => {
+        if (epoch !== group.epoch) return;
+        group.button.textContent = group.label;
+        group.timer = 0;
+      }, 2000);
+    } else {
+      group.timer = setTimeout(() => {
+        if (epoch !== group.epoch) return;
+        if (group.status) group.status.textContent = '';
+        group.timer = 0;
+      }, 4000);
+    }
   } else {
-    clearTimeout(copyTimers.get(ui)); ui.button.textContent = ui.label;
-    ui.status.textContent = 'Скопіюйте вручну.'; ui.area.hidden = false; ui.area.value = text;
-    ui.area.focus({ preventScroll: true }); ui.area.select(); ui.area.setSelectionRange(0, text.length);
+    if (group.status) group.status.textContent = group.fallback;
+    if (group.area) {
+      group.area.hidden = false; group.area.value = text;
+      group.area.focus({ preventScroll: true }); group.area.select(); group.area.setSelectionRange(0, text.length);
+      if (group === copyGroups.history) group.area.scrollIntoView({ block: 'nearest' });
+    }
   }
 }
-for (const ui of Object.values(copyUis)) {
-  ui.button.addEventListener('click', () => {
-    const epoch = copyEpoch;
-    let text = '';
-    try { text = ui.build(); } catch { ui.status.textContent = 'Журнал недоступний.'; return; }
-    let pending;
-    try { pending = navigator.clipboard.writeText(text); } catch { copyDone(ui, false, text); return; }
-    // A slow clipboard answer must not touch the UI of a game that has been restarted meanwhile.
-    Promise.resolve(pending).then(() => { if (epoch === copyEpoch) copyDone(ui, true, text); }, () => { if (epoch === copyEpoch) copyDone(ui, false, text); });
-  });
+function requestCopy(group, build) {
+  resetCopyGroup(group);
+  const epoch = group.epoch;
+  let text = '';
+  try { text = build(); } catch {
+    if (group.status) group.status.textContent = 'Журнал недоступний.';
+    return;
+  }
+  if (!text) { if (group.status) group.status.textContent = 'Немає даних для копіювання.'; return; }
+  if (group.status) group.status.textContent = 'Копіюємо…';
+  let pending;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable');
+    pending = navigator.clipboard.writeText(text);
+  } catch { copyDone(group, false, text, epoch); return; }
+  Promise.resolve(pending).then(
+    () => copyDone(group, true, text, epoch),
+    () => copyDone(group, false, text, epoch),
+  );
+}
+copyGroups.result.button.addEventListener('click', () => requestCopy(copyGroups.result, () => {
+  const game = latestGame(journal); return game ? formatReport(game) : '';
+}));
+copyGroups.all.button.addEventListener('click', () => requestCopy(copyGroups.all, () => formatAll(journal)));
+
+function historyDate(game) {
+  if (typeof game.startedAt === 'number' && Number.isFinite(game.startedAt)) {
+    const date = new Date(game.startedAt);
+    if (Number.isFinite(date.getTime())) {
+      try {
+        return new Intl.DateTimeFormat('uk-UA', {
+          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+        }).format(date);
+      } catch { /* use the journal's saved label below */ }
+    }
+  }
+  if (typeof game.startedLabel === 'string' && game.startedLabel.trim()) return game.startedLabel.trim().slice(0, 80);
+  return 'Дата невідома';
+}
+
+function historyStatus(summary) {
+  if (summary.reason === 'playing') return 'Триває';
+  if (summary.reason === 'abandoned') return 'Перервана';
+  return 'Завершена';
+}
+
+function refreshHistory() {
+  resetCopyGroup(copyGroups.history);
+  if (!historyList || !historyEmpty) return;
+  const games = journal.games.slice().reverse();
+  historyList.replaceChildren();
+  historyEmpty.hidden = games.length > 0;
+  for (const game of games) {
+    const summary = summarizeGame(game);
+    const date = historyDate(game);
+    const item = document.createElement('li'); item.className = 'history-entry';
+    const info = document.createElement('div'); info.className = 'history-entry-info';
+    const dateText = document.createElement('span'); dateText.className = 'history-entry-date'; dateText.textContent = date;
+    const meta = document.createElement('span'); meta.className = 'history-entry-meta';
+    const description = `${summary.score} очок · ${historyStatus(summary)}`;
+    meta.textContent = description;
+    info.append(dateText, meta);
+    const button = document.createElement('button');
+    button.className = 'secondary-button history-copy'; button.type = 'button'; button.textContent = 'Копіювати';
+    button.setAttribute('aria-label', `Скопіювати журнал партії від ${date} · ${description}`);
+    button.addEventListener('click', () => requestCopy(copyGroups.history, () => formatReport(game)));
+    item.append(info, button); historyList.append(item);
+  }
 }
 // --- New game: an unfinished game is replaced only after an in-page confirmation (not window.confirm).
 const confirmBox = $('confirmNew'), confirmStart = $('confirmStart'), confirmCancel = $('confirmCancel');
@@ -744,9 +836,18 @@ document.addEventListener('keydown', (event) => {
 $('newGameButton').addEventListener('click', requestNewGame); $('retryButton').addEventListener('click', () => startGame());
 $('helpButton').addEventListener('click', () => {
   if (hammerArmed) { disarmHammer(); completedMessage(); render(); }
+  refreshHistory();
   $('helpDialog').showModal();
 });
-$('helpDialog').addEventListener('close', () => { journalReadyAt = performance.now(); }); // thinking time excludes reading the help
+$('helpDialog').addEventListener('close', () => {
+  resetCopyGroup(copyGroups.all);
+  resetCopyGroup(copyGroups.history);
+  journalReadyAt = performance.now();
+}); // thinking time excludes reading the help; pending copy answers cannot update a closed/reopened dialog
+historyDetails?.addEventListener('toggle', () => {
+  if (historyDetails.open) refreshHistory();
+  else resetCopyGroup(copyGroups.history);
+});
 $('closeHelp').addEventListener('click', () => $('helpDialog').close()); $('playButton').addEventListener('click', () => $('helpDialog').close());
 $('helpDialog').addEventListener('click', (e) => { if (e.target === $('helpDialog')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close(); } });
 new ResizeObserver(resize).observe(playArea);

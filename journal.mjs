@@ -3,7 +3,9 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'controls-bf3253fff4';
+export const BUILD_ID = 'rainbow-d6dc18844b';
+// Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
+const RAINBOW_COLOR = 'rainbow';
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones
 
 export function createJournal() {
@@ -39,9 +41,12 @@ export function stackHeight(state) {
   return top === Infinity ? 0 : state.rows - top;
 }
 
+// Ordinary colours only: the rainbow strip is a wildcard, not a colour of its own.
 function colorCount(state) {
-  return new Set((state?.pieces ?? []).map((piece) => piece.color)).size;
+  return new Set((state?.pieces ?? []).map((piece) => piece.color).filter((color) => color !== RAINBOW_COLOR)).size;
 }
+
+const hasRainbowRow = (state) => Array.isArray(state?.nextRow) && state.nextRow.some((segment) => segment?.color === RAINBOW_COLOR);
 
 export function startGameLog(journal, { seed, mode, startedAt, startedLabel, device, build = BUILD_ID } = {}) {
   const previous = latestGame(journal);
@@ -95,6 +100,7 @@ export function recordTurn(journal, {
     followed: Boolean(followedHint),
     over: gameOver ? (gameOver.reason ?? 'top-row') : null,
   };
+  if (hasRainbowRow(after)) turn.rb = true; // the shown row carries a rainbow strip (absent = none)
   game.turns.push(turn);
   return turn;
 }
@@ -183,7 +189,7 @@ export function summarizeGame(game) {
 export const LEGEND = 'L n move sec +gain rN h<before>><after> events next cN HN[f] | '
   + 'move: M<cells incl. start>/<pieceLen> or Rcw|Rccw; sec: think time; rN: rows cleared; h: stack; '
   + 'events (+ joined): U rise, Da/Dr double after/instead of rise, P pause, X game over; '
-  + 'next: reg|res(cue) row, +1|2 verified path (none: unknown); cN: colours; HN: hints pressed, f: first step of last hint followed';
+  + 'next: reg|res row, +1|2 verified path, ~ rainbow strip; cN: colours; HN: hints pressed, f: hint step followed';
 
 function seconds(ms) {
   return (Math.min(ms, 999900) / 1000).toFixed(1);
@@ -203,7 +209,7 @@ export function formatTurn(turn) {
     `r${turn.rows}`,
     `${turn.hBefore}>${turn.hAfter}`,
     events.length ? events.join('+') : '-',
-    `${turn.next}${turn.w ? turn.w : ''}`,
+    `${turn.next}${turn.w ? turn.w : ''}${turn.rb ? '~' : ''}`,
     `c${turn.colors}`,
     `H${turn.hints}${turn.followed ? 'f' : ''}`,
   ].join(' ');
@@ -279,8 +285,9 @@ function onlyKeys(object, keys) {
 
 function importTurn(turn) {
   const keys = [...TURN_INTEGERS, 'kind', 'direction', 'rise', 'doubled', 'pause', 'rescueInserted', 'next', 'followed', 'over'];
-  const { w, ...rest } = turn ?? {};
+  const { w, rb, ...rest } = turn ?? {};
   if (w !== undefined && w !== 0 && w !== 1 && w !== 2) return null;
+  if (rb !== undefined && rb !== true) return null; // optional marker, written only when the shown row has a strip
   if (!onlyKeys(rest, keys)) return null;
   if (!TURN_INTEGERS.every((key) => isCount(turn[key]))) return null;
   if (turn.kind !== 'move' && turn.kind !== 'rotate') return null;
@@ -292,6 +299,7 @@ function importTurn(turn) {
   const copy = {};
   for (const key of keys) copy[key] = turn[key];
   copy.w = turn.w === 1 || turn.w === 2 ? turn.w : 0; // absent in journals saved by the previous build
+  if (turn.rb === true) copy.rb = true; // absent in journals saved before the rainbow strip
   return copy;
 }
 
