@@ -19,7 +19,7 @@
   gap: 9px;
 }
 .board-slot{display:flex;justify-content:center;align-items:center}.board-frame{position:relative;flex-shrink:0;background:#0b1527;border:1px solid #7896bc22;box-shadow:inset 0 2px 8px #0005,0 10px 25px #0002;border-radius:15px;padding:5px;overflow:hidden;transition:border-color .2s}canvas{display:block;touch-action:none;-webkit-user-select:none;user-select:none}#board{border-radius:9px;cursor:grab}#board.dragging{cursor:grabbing}.board-frame.resolve{border-color:#66e5c580}.board-frame.invalid{animation:shake .2s ease-in-out}.board-frame.danger{border-color:#ff65745e}.next-section{flex-shrink:0;align-self:center;max-width:100%}.next-label{text-transform:uppercase;display:flex;justify-content:space-between;font-size:8px;font-weight:750;letter-spacing:1.5px;color:#7991b4;line-height:1;margin-bottom:6px;padding:0 2px}.next-arrow{font-size:13px;line-height:6px;color:#66e5c5}#nextRow{border-radius:6px;background:#091525}
-.toolbar { display: flex; gap: 6px; flex-shrink: 0; align-items: stretch; margin-top: 1px; }
+.toolbar, .tool-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: stretch; margin-top: 1px; }
 .rotate-button {
   display: flex;
   align-items: center;
@@ -93,13 +93,13 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
 /* P1: record next to the score, "new record" line, in-page new-game confirmation */
 .best{margin-left:8px;letter-spacing:.2px;font-weight:600;color:#a9bddb;white-space:nowrap}
 .new-record{margin:12px 0 0;font-size:15px!important;font-weight:750;color:var(--teal)!important;letter-spacing:.2px}
-.confirm{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;padding:16px;background:#020915bd;backdrop-filter:blur(6px)}
-.confirm-card{width:min(320px,100%);padding:22px 18px 18px;border-radius:20px;border:1px solid #7ca5d13b;background:#14233b;box-shadow:0 30px 100px #0008;text-align:center}
+.loadout-dialog{width:min(320px,calc(100vw - 32px));padding:0;border:1px solid #7ca5d13b;border-radius:20px;background:#14233b;color:var(--ink);box-shadow:0 30px 100px #0008}
+.loadout-dialog::backdrop{background:#020915bd;backdrop-filter:blur(6px)}
+.confirm-card{padding:22px 18px 18px;text-align:center}
 .confirm-card h2{font-size:21px;letter-spacing:-.4px;margin:0 0 8px}.confirm-card p{margin:0 0 18px;font-size:13px;color:#9eb0ca}
-.confirm-actions{display:flex;gap:8px}.confirm-actions button{flex:1;min-height:48px;margin:0;justify-content:center}
-.confirm-actions .primary-button{width:auto;padding:0 14px;justify-content:center}
+.loadout-options{display:grid;gap:8px}.loadout-options .primary-button{min-height:48px;justify-content:center}
 .masthead-actions { display: flex; align-items: center; gap: 12px; }
-.hammer-button {
+.tool-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -114,9 +114,11 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
   font-size: 12px;
   font-weight: 750;
 }
-.hammer-button[aria-pressed="true"] { background: #f3c969; color: #241b10; }
-.hammer-count { min-width: 1.25em; text-align: center; font-variant-numeric: tabular-nums; }
-#board.hammer-armed { cursor: crosshair; }
+.tool-button[aria-pressed="true"], .tool-actions .apply-tool { background: #f3c969; color: #241b10; }
+.tool-count { min-width: 1.25em; text-align: center; font-variant-numeric: tabular-nums; }
+.tool-actions .secondary-button { flex: 1; width: auto; margin: 0; }
+.tool-actions .apply-tool:hover { background: #f8d98a; }
+#board.tool-armed { cursor: crosshair; }
 @keyframes hint-pulse{0%,100%{outline-color:#d58bff}50%{outline-color:#d58bff40}}@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}@keyframes gain{0%{opacity:0;transform:translate(-50%,12px)}15%,65%{opacity:1}100%{opacity:0;transform:translate(-50%,-24px)}}
 @media (max-width: 850px), (hover: none) and (pointer: coarse) {
   .intro { display: none; }
