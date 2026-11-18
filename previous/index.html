@@ -11,14 +11,14 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23101c31'/%3E%3Cpath d='M7 7h8v8H7z' fill='%235D8FE8'/%3E%3Cpath d='M17 7h8v8h-8z' fill='%23F3C969'/%3E%3Cpath d='M7 17h8v8H7z' fill='%23F3C969'/%3E%3Cpath d='M17 17h8v8h-8z' fill='%235D8FE8'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=rainbow-8b400d4828">
+  <link rel="stylesheet" href="./styles.css?v=a0-1b2f87c23d">
 </head>
 <body>
   <main class="layout">
     <aside class="intro" aria-label="Про гру">
       <span class="eyebrow"><i></i> GAMEOFYEAR</span>
       <h1>Знайди<br>свій <em>хід.</em></h1>
-      <p>Рухай і повертай фігури. Заповнюй горизонтальні ряди одним кольором.</p>
+      <p>Рухай і повертай фігури. Заповнюй горизонтальні ряди.</p>
       <div class="intro-tiles" aria-hidden="true"><b></b><b></b><b></b><b></b></div>
     </aside>
 
@@ -27,6 +27,13 @@
         <header class="masthead">
           <div class="brand"><div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div><span>Кольорові ряди</span></div>
           <div class="masthead-actions">
+            <button id="hintButton" class="hint-button" type="button" aria-label="Підказати хід" title="Підказати хід">
+              <span class="hint-icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                  <path d="M9 18v-1a4 4 0 0 0-1.4-3.1 6 6 0 1 1 8.8 0A4 4 0 0 0 15 17v1H9m1 3h4"/>
+                </svg>
+              </span>
+            </button>
             <button id="newGameButton" class="new-game-button" type="button">Нова гра</button>
             <button id="helpButton" class="icon-button" type="button" aria-label="Як грати">?</button>
           </div>
@@ -70,7 +77,6 @@
         <button id="hammerButton" class="hammer-button" type="button" aria-pressed="false" aria-label="Молоток, залишилось 3 удари" disabled>
           <span aria-hidden="true">🔨</span><span id="hammerCount" class="hammer-count" aria-hidden="true">3</span>
         </button>
-        <button id="hintButton" class="hint-button" type="button" aria-label="Підказати хід">Підказати хід</button>
       </div>
       <p id="status" class="status" role="status" aria-live="polite">Торкнись фігури, щоб обрати.</p>
       <noscript>Для гри потрібно увімкнути JavaScript у браузері.</noscript>
@@ -94,7 +100,7 @@
     <ol class="rules">
       <li><b>Переміщуй фігури</b><p>Перетягни фігуру вгору, вниз або вбік вільним шляхом. Зміна позиції після відпускання коштує один хід.</p></li>
       <li><b>Повертай фігури зі світлою рамкою</b><p>Обери таку фігуру й натисни Вліво чи Вправо. Поворот — повноцінний хід, як і переміщення; за потреби фігуру підіймає до вільної позиції.</p></li>
-      <li><b>Підказати хід</b><p>Протягом усієї партії кнопка може показати фігуру й місце або поворот, що ведуть до очищення. Запит підказки коштує 0 ходів.</p></li>
+      <li><b>Підказати хід</b><p>Натисни лампочку біля «Нова гра». Протягом усієї партії вона може показати фігуру й місце або поворот, що ведуть до очищення. Запит підказки коштує 0 ходів.</p></li>
       <li><b>Молоток</b><p>На партію є три удари. Натисни молоток і торкнись фігури, щоб прибрати її цілком. Якщо поле очиститься повністю, його заповнить показаний ряд.</p></li>
       <li><b>Заповнюй горизонтальні ряди</b><p>Повний ряд очищається, якщо всі блоки одного кольору або в ньому є райдужна клітинка. Кожен очищений ряд дає 100 очок. Якщо ряд зник до підйому, показаний ряд зазвичай чекає. Від 3000 очок додається другий колір, а від 4000 — райдужна смужка.</p></li>
     </ol>
@@ -114,6 +120,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./main.mjs?v=rainbow-8b400d4828"></script>
+  <script type="module" src="./main.mjs?v=a0-1b2f87c23d"></script>
 </body>
 </html>

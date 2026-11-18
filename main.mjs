@@ -1,8 +1,8 @@
-import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=a0-1b2f87c23d';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=a0-1b2f87c23d';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=a0-1b2f87c23d';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=a0-1b2f87c23d';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=a0-1b2f87c23d';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, TOOL_CHARGES, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=a1-de0f23cea3';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=a1-de0f23cea3';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=a1-de0f23cea3';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=a1-de0f23cea3';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=a1-de0f23cea3';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -19,10 +19,18 @@ let previewTween = null, previewFrame = 0;
 let hintDirection = 'clockwise';
 let suggestion = null, suggestionFrame = 0, hintVisible = true;
 const hintButton = $('hintButton');
-const hammerButton = $('hammerButton'), hammerCount = $('hammerCount');
-const HAMMER_PROMPT = 'Торкнись фігури, яку хочеш прибрати.';
-const HAMMER_TAP_DISTANCE = 8;
-let hammerArmed = false, hammerTarget = null;
+const toolButtons = [$('hammerButton'), $('lineToolButton')];
+const toolCounts = [$('hammerCount'), $('lineToolCount')];
+const lineToolName = $('lineToolName');
+const toolbar = $('toolbar'), toolActions = $('toolActions'), applyTool = $('applyTool');
+const confirmBox = $('confirmNew');
+const TOOL_UI = {
+  hammer: { name: 'Молоток', prompt: 'Торкнись фігури, яку хочеш прибрати.' },
+  arrow: { name: 'Стріла', prompt: 'Торкнись ряду, який хочеш прибрати.' },
+  cannon: { name: 'Пушка', prompt: 'Торкнись колонки, яку хочеш прибрати.' },
+};
+const TOOL_TAP_DISTANCE = 8;
+let activeTool = null, toolGesture = null, toolPreview = null;
 let successfulActions = 0, rotated = false, selectHintShown = false;
 const ROTATE_IDLE_HINT = 'Торкнись фігури: зі світлою рамкою її можна й повернути.';
 const ROTATE_SELECT_HINT = 'Фігури зі світлою рамкою можна повернути кнопками Вліво / Вправо.';
@@ -39,8 +47,8 @@ function journalTime(date) {
 }
 function journalRecord(before, result) {
   const first = result.events[0];
-  if (first.type === 'hammer') {
-    recordHammer(journal, { before, after: result.state, result });
+  if (first.type === 'hammer' || first.type === 'tool') {
+    recordTool(journal, { before, after: result.state, result });
   } else {
     const hint = journalLastHint, rotateAction = first.type === 'rotate';
     const followed = Boolean(hint) && hint.pieceId === first.pieceId && (rotateAction
@@ -91,7 +99,7 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const keys = [STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  const keys = [STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
   for (let index = 0; index < keys.length; index += 1) {
     const stored = await storage.load(keys[index]);
     if (stored.reason === 'missing') continue;
@@ -101,7 +109,7 @@ async function readSavedRecord(slot) {
   return { ok: false, reason: 'missing' };
 }
 function hasProgress(game) {
-  return game.turn > 0 || (game.hammersRemaining ?? HAMMER_CHARGES) < HAMMER_CHARGES;
+  return game.turn > 0 || Boolean(game.tools?.some(({ kind, charges }) => charges < TOOL_CHARGES[kind]));
 }
 
 function seed() {
@@ -140,7 +148,7 @@ function resize() {
   const widthPerCell = (playArea.clientWidth - frameWidth) / state.cols;
   const heightPerCell = (playArea.clientHeight - frameHeight - labelHeight - gap) / (state.rows + 1);
   const nextCell = Math.max(8, Math.floor(Math.min(widthPerCell, heightPerCell)));
-  if (nextCell !== cell) { cancelDrag(); cancelHammerTarget(); }
+  if (nextCell !== cell) { cancelDrag(); cancelToolGesture(); }
   cell = nextCell;
   setCanvas(board, ctx, cell * state.cols, cell * state.rows);
   setCanvas(nextCanvas, nextCtx, cell * state.cols, cell);
@@ -310,20 +318,29 @@ function showNextRow() {
 }
 function render() {
   if (!state) return;
-  const showRotation = !busy && !drag && !hammerArmed && state.status === 'playing';
-  const remaining = state.hammersRemaining ?? 0;
-  hammerCount.textContent = remaining;
-  hammerButton.disabled = busy || Boolean(drag) || confirmOpen || state.status !== 'playing' || remaining === 0;
-  hammerButton.setAttribute('aria-pressed', String(hammerArmed));
-  hammerButton.setAttribute('aria-label', `Молоток, запас ударів ${remaining} з ${HAMMER_CHARGES}`);
-  board.classList.toggle('hammer-armed', hammerArmed);
+  const showRotation = !busy && !drag && !activeTool && state.status === 'playing';
+  const toolBlocked = busy || Boolean(drag || toolGesture) || confirmBox.open || state.status !== 'playing';
+  for (const [index, button] of toolButtons.entries()) {
+    const slot = state.tools?.[index];
+    button.disabled = toolBlocked || !slot?.charges;
+    button.setAttribute('aria-pressed', String(Boolean(slot && slot.kind === activeTool)));
+    if (!slot) continue;
+    const name = TOOL_UI[slot.kind].name;
+    if (index === 1 && lineToolName.textContent !== name) lineToolName.textContent = name;
+    if (toolCounts[index].textContent !== String(slot.charges)) toolCounts[index].textContent = slot.charges;
+    button.setAttribute('aria-label', `${name}. Заряди ${slot.charges} з ${TOOL_CHARGES[slot.kind]}`);
+  }
+  toolbar.hidden = Boolean(toolPreview);
+  toolActions.hidden = !toolPreview;
+  applyTool.disabled = toolBlocked || !toolPreview;
+  board.classList.toggle('tool-armed', Boolean(activeTool));
   const rotationHints = showRotation && rotationPreviews.get(selectedId);
   for (const [direction, button] of Object.entries(rotationButtons)) {
     button.disabled = !rotationHints?.[direction];
   }
   if (!busy) hintVisible = state.trial === true && state.status === 'playing';
   hintButton.classList.toggle('is-off', !hintVisible);
-  hintButton.disabled = busy || Boolean(drag || hammerTarget) || !hintVisible;
+  hintButton.disabled = busy || Boolean(drag || toolGesture) || confirmBox.open || !hintVisible;
   for (const [direction, button] of Object.entries(rotationButtons)) {
     button.classList.toggle('hint-target', Boolean(suggestion) && !busy && suggestion.kind === 'rotate' && suggestion.direction === direction);
   }
@@ -352,6 +369,7 @@ function render() {
     ctx.fillStyle = `rgba(129,255,215,${.16 * (1 - activePhase.progress)})`;
     for (const y of activePhase.rows) ctx.fillRect(0, y * cell, state.cols * cell, cell);
   }
+  if (toolPreview) drawToolPreview();
   if (!busy) drawSuggestion();
   if (drag?.moved) {
     const selected = piece(drag.id);
@@ -367,7 +385,8 @@ function render() {
   $('newRecord').hidden = !(state.status === 'gameover' && isNewRecord(state.score, bestAtStart));
   $('gameOver').hidden = state.status !== 'gameover' || busy;
   $('finalScore').textContent = state.score.toLocaleString('uk-UA');
-  const boardPrompt = hammerArmed ? HAMMER_PROMPT : selectedId ? 'Фігуру обрано.' : 'Обери фігуру.';
+  const boardPrompt = toolPreview ? 'Ціль обрано. Застосуй інструмент або скасуй.'
+    : activeTool ? TOOL_UI[activeTool].prompt : selectedId ? 'Фігуру обрано.' : 'Обери фігуру.';
   board.setAttribute('aria-label', `Поле ${state.cols} на ${state.rows}. Очки: ${displayedScore}. Ходів: ${state.turn}. ${boardPrompt}`);
 }
 function clearSuggestion() {
@@ -380,8 +399,8 @@ function suggestionTick() {
   if (!reducedMotion.matches && !document.hidden) suggestionFrame = requestAnimationFrame(suggestionTick);
 }
 function requestHint() {
-  if (!state || busy || drag || hammerTarget || confirmOpen || state.status !== 'playing' || !hintVisible) return;
-  disarmHammer();
+  if (!state || busy || drag || toolGesture || confirmBox.open || state.status !== 'playing' || !hintVisible) return;
+  disarmTool();
   const found = suggestAction(state);
   journalHints++; journalLastHint = found && { kind: found.kind, pieceId: found.pieceId, direction: found.direction, offset: found.offset }; // journal
   clearSuggestion();
@@ -416,14 +435,14 @@ function animate(duration, update) {
     animationFrame = requestAnimationFrame(tick);
   });
 }
-function completedMessage(gained = 0, doubled = false, didRise = true, hammered = false) {
+function completedMessage(gained = 0, doubled = false, didRise = true, usedTool = false) {
   if (storageNoticePending && state.status === 'playing') { storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); return; }
   const doubledText = doubled === 'after-rise' ? 'Додано ряд, поле подвоїлось.' : state.skipNextRise ? 'Поле подвоїлось. Наступний хід без підйому.' : 'Поле подвоїлось. Показаний ряд чекає.';
   if (state.status === 'gameover') message('Верхній ряд зайнятий.', 'bad');
+  else if (usedTool) message(`Інструмент · +${gained} очок.${doubled ? ` ${doubledText}` : ''}`, 'good');
   else if (gained && doubled) message(`Прибрано рядів: ${gained / 100} · +${gained}. ${doubledText}`, 'good');
   else if (gained) message(`Прибрано рядів: ${gained / 100} · +${gained} очок${didRise ? '' : '. Показаний ряд чекає.'}`, 'good');
   else if (doubled) message(doubledText, 'good');
-  else if (hammered) message('Фігуру прибрано.', 'good');
   else if (state.skipNextRise) message('Наступний хід без підйому.', 'good');
   else if (rotationHintActive()) message(ROTATE_IDLE_HINT);
   else message('Обирай фігуру для наступного ходу.');
@@ -435,7 +454,7 @@ function finishPlayback() {
   frame.classList.remove('resolve'); completedMessage(); render();
 }
 function installState(next, text, restored = false) {
-  actionEpoch++; cancelTween(); cancelDrag(); disarmHammer(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
+  actionEpoch++; cancelTween(); cancelDrag(); disarmTool(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
   hintDirection = 'clockwise'; successfulActions = restored ? next.turn : 0; rotated = false; selectHintShown = false;
   state = next;
   journalHints = 0; journalLastHint = null; journalReadyAt = performance.now();
@@ -447,9 +466,9 @@ function installState(next, text, restored = false) {
   else message(rotationHintActive() ? ROTATE_IDLE_HINT : 'Торкнись фігури, щоб обрати.');
   resize();
 }
-function startGame(notice = '') {
+function startGame(lineTool) {
   const gameSeed = seed();
-  const next = createGame({ cols: 8, rows: 12, seed: gameSeed, trial: true });
+  const next = createGame({ cols: 8, rows: 12, seed: gameSeed, trial: true, lineTool });
   journalSafe(() => {
     const now = new Date();
     startGameLog(journal, { seed: gameSeed, mode: `trial ${next.cols}x${next.rows}`, startedAt: now.getTime(), startedLabel: journalTime(now), device: parseDevice(navigator.userAgent), build: BUILD_ID });
@@ -457,8 +476,8 @@ function startGame(notice = '') {
     refreshHistory();
   });
   bestAtStart = best; recordBase = best;
-  installState(next, notice);
-  if (storageNoticePending && !notice) { storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); }
+  installState(next);
+  if (storageNoticePending) { storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); }
   persistGame(); persistJournal(); // a fresh game replaces the stored one; the best score and the journal stay
 }
 // Restores the stored best score, last game and journal; a damaged or foreign game record never blocks a new game.
@@ -474,8 +493,7 @@ async function initGame() {
   const record = gameRead.ok ? parseGame(gameRead.value) : null;
   if (!record?.ok) {
     const damaged = gameRead.ok || gameRead.reason !== 'missing';
-    startGame(damaged ? 'Збережену партію не вдалося відновити, почато нову.' : '');
-    if (!storage.available && !storageNoticeShown) { storageNoticeShown = true; storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); }
+    showLoadout(damaged ? 'Збережену партію не вдалося відновити. Обери набір для нової.' : '');
     return;
   }
   const bestStored = best;
@@ -499,8 +517,9 @@ async function commit(result, initialScene = scene) {
   if (!result.changed) { invalidFeedback('Шлях зайнятий. Спробуй обійти перешкоду.'); render(); return; }
   cancelPreviewTransition();
   const epoch = ++actionEpoch, oldScore = state.score;
-  const hammered = result.events[0]?.type === 'hammer';
-  if (!hammered) successfulActions++;
+  const firstEvent = result.events[0]?.type;
+  const usedTool = firstEvent === 'hammer' || firstEvent === 'tool';
+  if (!usedTool) successfulActions++;
   clearSuggestion();
   journalSafe(() => journalRecord(state, result)); // journal: successful actions only
   state = result.state; selectedId = null; busy = true; scene = initialScene;
@@ -534,15 +553,16 @@ async function commit(result, initialScene = scene) {
     });
     if (!complete || actionEpoch !== epoch) return;
     rotationTween = null; scene = phase.to;
-    if (phase.type === 'rise' || (hammered && phase.type === 'refill')) {
+    if (phase.type === 'rise' || (usedTool && phase.type === 'refill')) {
       didRise = true;
       waitingForDebut = hasDebutPreview && displayedScore < COLOR_DEBUT_SCORE;
       if (waitingForDebut || state.status !== 'playing') transitionNextRow([], 'regular');
       else transitionNextRow(state.nextRow, state.nextRowKind, state.skipNextRise);
     }
-    if (phase.type === 'clear') {
-      displayedScore += phase.rows.length * 100;
-      $('gain').textContent = `+${phase.rows.length * 100}`; $('gain').classList.remove('show'); void $('gain').offsetWidth; $('gain').classList.add('show');
+    const gain = phase.type === 'clear' ? phase.rows.length * 100 : phase.gain ?? 0;
+    if (gain) {
+      displayedScore += gain;
+      $('gain').textContent = `+${gain}`; $('gain').classList.remove('show'); void $('gain').offsetWidth; $('gain').classList.add('show');
       if (waitingForDebut && displayedScore >= COLOR_DEBUT_SCORE) {
         waitingForDebut = false;
         render();
@@ -553,10 +573,10 @@ async function commit(result, initialScene = scene) {
   scene = state.pieces; displayedScore = state.score; journalReadyAt = performance.now();
   if (!didRise || waitingForDebut || state.status === 'gameover') showNextRow();
   refreshRotationPreviews();
-  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled, didRise, hammered); render();
+  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled, didRise, usedTool); render();
 }
 function rotate(direction) {
-  if (busy || drag || hammerArmed || confirmOpen || !selectedId || state.status !== 'playing') return;
+  if (busy || drag || activeTool || confirmBox.open || !selectedId || state.status !== 'playing') return;
   const result = rotatePiece(state, selectedId, direction);
   if (result.changed) { rotated = true; commit(result); }
 }
@@ -567,50 +587,91 @@ function processDragSample(event) {
   if (!drag.moved) return;
   drag = advanceDrag(state, drag, raw);
 }
-function pieceAt(event) {
+function boardCell(event) {
   const rect = board.getBoundingClientRect();
   const x = Math.floor((event.clientX - rect.left) / cell), y = Math.floor((event.clientY - rect.top) / cell);
-  return state.pieces.find((item) => item.cells.some((point) => point.x === x && point.y === y));
+  return x >= 0 && x < state.cols && y >= 0 && y < state.rows ? { x, y } : null;
 }
-function movedDuringHammerTap(event, target) {
-  return Math.hypot(event.clientX - target.startX, event.clientY - target.startY) > HAMMER_TAP_DISTANCE;
+function pieceAt(position) {
+  return position && state.pieces.find((item) => item.cells.some((point) => point.x === position.x && point.y === position.y));
 }
-function cancelHammerTarget() {
-  if (!hammerTarget) return;
-  const { pointerId } = hammerTarget;
-  hammerTarget = null; selectedId = null;
+function targetAt(position) {
+  if (!position) return null;
+  if (activeTool === 'hammer') return pieceAt(position)?.id ?? null;
+  return activeTool === 'arrow' ? position.y : position.x;
+}
+function movedDuringToolTap(event, gesture) {
+  return Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > TOOL_TAP_DISTANCE;
+}
+function cancelToolGesture() {
+  if (!toolGesture) return;
+  const { pointerId } = toolGesture;
+  toolGesture = null;
   if (board.hasPointerCapture(pointerId)) board.releasePointerCapture(pointerId);
   scheduleRender();
 }
-function disarmHammer() {
-  if (!hammerArmed) return;
-  hammerArmed = false; cancelHammerTarget();
+function disarmTool() {
+  activeTool = null;
+  toolPreview = null;
+  cancelToolGesture();
 }
-function toggleHammer() {
-  if (!state || busy || drag || confirmOpen || state.status !== 'playing' || !state.hammersRemaining) return;
-  if (hammerArmed) {
-    disarmHammer();
+function toggleTool(kind) {
+  if (!state || busy || drag || toolGesture || confirmBox.open || state.status !== 'playing'
+    || !state.tools?.find((slot) => slot.kind === kind)?.charges) return;
+  if (activeTool === kind) {
+    disarmTool();
     completedMessage();
   } else {
-    hammerArmed = true; selectedId = null; clearSuggestion();
-    message(HAMMER_PROMPT);
+    activeTool = kind; toolPreview = null; selectedId = null; clearSuggestion();
+    message(TOOL_UI[kind].prompt);
   }
   render();
 }
+function drawToolPreview() {
+  const { target, cells } = toolPreview;
+  ctx.save();
+  ctx.fillStyle = '#f3c96925';
+  ctx.strokeStyle = '#ffe2a5';
+  ctx.lineWidth = 2;
+  if (activeTool === 'arrow') ctx.fillRect(0, target * cell, state.cols * cell, cell);
+  if (activeTool === 'cannon') ctx.fillRect(target * cell, 0, cell, state.rows * cell);
+  for (const { x, y } of cells) ctx.strokeRect(x * cell + 3, y * cell + 3, cell - 6, cell - 6);
+  ctx.restore();
+}
+function previewTool(target) {
+  const cells = toolTargetCells(state, activeTool, target);
+  toolPreview = cells.length ? { target, cells } : null;
+  message(toolPreview ? `Клітинок: ${cells.length} · +${cells.length * TOOL_CELL_POINTS} очок.` : 'Ціль порожня. Обери інше місце.');
+  render();
+}
+function cancelToolSelection() {
+  if (!activeTool) return;
+  const index = state.tools.findIndex((slot) => slot.kind === activeTool);
+  disarmTool();
+  completedMessage();
+  render();
+  toolButtons[index]?.focus({ preventScroll: true });
+}
+$('cancelTool').addEventListener('click', cancelToolSelection);
+applyTool.addEventListener('click', () => {
+  if (!activeTool || !toolPreview || toolGesture || busy || confirmBox.open) return;
+  const result = useTool(state, activeTool, toolPreview.target);
+  disarmTool();
+  commit(result);
+});
 board.addEventListener('pointerdown', (event) => {
-  if (!state || confirmOpen || busy || state.status !== 'playing' || event.button > 0 || !event.isPrimary || drag || hammerTarget) return;
+  if (!state || confirmBox.open || busy || state.status !== 'playing' || event.button > 0 || !event.isPrimary || drag || toolGesture) return;
   event.preventDefault(); board.focus({ preventScroll: true });
-  const hit = pieceAt(event);
-  selectedId = hit?.id ?? null;
-  if (suggestion && suggestion.pieceId !== selectedId) clearSuggestion();
-  if (hammerArmed) {
-    if (hit) {
-      hammerTarget = { id: hit.id, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId };
-      board.setPointerCapture(event.pointerId);
-    }
+  const position = boardCell(event);
+  if (activeTool) {
+    toolGesture = { target: targetAt(position), startX: event.clientX, startY: event.clientY, pointerId: event.pointerId };
+    board.setPointerCapture(event.pointerId);
     render();
     return;
   }
+  const hit = pieceAt(position);
+  selectedId = hit?.id ?? null;
+  if (suggestion && suggestion.pieceId !== selectedId) clearSuggestion();
   if (hit) {
     drag = { id: hit.id, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId,
       path: [{ x: 0, y: 0 }], offset: { x: 0, y: 0 }, floating: { x: 0, y: 0 }, moved: false, blocked: false };
@@ -620,9 +681,9 @@ board.addEventListener('pointerdown', (event) => {
   render();
 });
 board.addEventListener('pointermove', (event) => {
-  if (hammerTarget?.pointerId === event.pointerId) {
+  if (toolGesture?.pointerId === event.pointerId) {
     event.preventDefault();
-    if (movedDuringHammerTap(event, hammerTarget)) cancelHammerTarget();
+    if (movedDuringToolTap(event, toolGesture)) cancelToolGesture();
     return;
   }
   if (!drag || drag.pointerId !== event.pointerId) return;
@@ -632,14 +693,11 @@ board.addEventListener('pointermove', (event) => {
   processDragSample(event); scheduleRender();
 });
 board.addEventListener('pointerup', (event) => {
-  if (hammerTarget?.pointerId === event.pointerId) {
-    const target = hammerTarget;
-    const validTap = !movedDuringHammerTap(event, target) && pieceAt(event)?.id === target.id;
-    cancelHammerTarget();
-    if (validTap && hammerArmed && !confirmOpen && !busy) {
-      const result = useHammer(state, target.id);
-      if (result.changed) { disarmHammer(); commit(result); }
-    }
+  if (toolGesture?.pointerId === event.pointerId) {
+    const gesture = toolGesture;
+    const validTap = !movedDuringToolTap(event, gesture) && targetAt(boardCell(event)) === gesture.target;
+    cancelToolGesture();
+    if (validTap && activeTool && !confirmBox.open && !busy) previewTool(gesture.target);
     return;
   }
   if (!drag || drag.pointerId !== event.pointerId) return;
@@ -674,23 +732,23 @@ function cancelDrag() {
 }
 function cancelPointer(event) {
   if (drag?.pointerId === event.pointerId) cancelDrag();
-  if (hammerTarget?.pointerId === event.pointerId) cancelHammerTarget();
+  if (toolGesture?.pointerId === event.pointerId) cancelToolGesture();
 }
 board.addEventListener('pointercancel', cancelPointer);
 board.addEventListener('lostpointercapture', cancelPointer);
-window.addEventListener('blur', () => { cancelDrag(); cancelHammerTarget(); });
+window.addEventListener('blur', () => { cancelDrag(); cancelToolGesture(); });
 window.addEventListener('pagehide', persistAll);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) journalReadyAt = performance.now();
   if (document.hidden) {
     persistAll();
-    cancelDrag(); cancelHammerTarget();
+    cancelDrag(); cancelToolGesture();
     if (busy) finishPlayback();
     else if (previewTween) { cancelPreviewTransition(); showNextRow(); }
   }
 });
 board.addEventListener('keydown', (event) => {
-  if (!selectedId || busy || drag || hammerArmed || confirmOpen || state.status !== 'playing') return;
+  if (!selectedId || busy || drag || activeTool || confirmBox.open || state.status !== 'playing') return;
   if (event.key.toLowerCase() === 'r') { event.preventDefault(); rotate(event.shiftKey ? 'counterclockwise' : 'clockwise'); return; }
   const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
   if (direction) { event.preventDefault(); commit(movePieceAlongPath(state, selectedId, [{ x: direction[0], y: direction[1] }])); }
@@ -702,7 +760,7 @@ for (const [direction, button] of Object.entries(rotationButtons)) {
   button.addEventListener('click', () => rotate(direction));
 }
 hintButton.addEventListener('click', requestHint);
-hammerButton.addEventListener('click', toggleHammer);
+toolButtons.forEach((button, index) => button.addEventListener('click', () => toggleTool(state?.tools?.[index]?.kind)));
 // --- Copy results (DEMO_PLAN 18): clipboard write inside the click handler; read-only textarea as the fallback.
 const copyGroups = {
   result: {
@@ -826,34 +884,39 @@ function refreshHistory() {
     item.append(info, button); historyList.append(item);
   }
 }
-// --- New game: an unfinished game is replaced only after an in-page confirmation (not window.confirm).
-const confirmBox = $('confirmNew'), confirmStart = $('confirmStart'), confirmCancel = $('confirmCancel');
-let confirmOpen = false;
-function closeConfirm() { confirmOpen = false; confirmBox.hidden = true; $('newGameButton').focus({ preventScroll: true }); render(); }
-function requestNewGame() {
-  if (!state || confirmOpen) return;
-  if (hammerArmed) { disarmHammer(); completedMessage(); }
-  if (state.status === 'playing' && hasProgress(state)) {
-    confirmOpen = true; confirmBox.hidden = false; confirmStart.focus({ preventScroll: true }); render();
-    return;
-  }
-  startGame();
+// Choosing a starting set confirms the replacement of an unfinished game.
+const confirmCancel = $('confirmCancel');
+function showLoadout(notice = '') {
+  if (confirmBox.open) return;
+  if (activeTool) { disarmTool(); completedMessage(); }
+  cancelDrag();
+  const replacing = state?.status === 'playing' && hasProgress(state);
+  $('confirmText').textContent = notice || (replacing ? 'Нова партія замінить поточну.' : 'Обери два інструменти для нової партії.');
+  confirmCancel.hidden = !state;
+  confirmBox.showModal();
+  render();
 }
-confirmStart.addEventListener('click', () => { closeConfirm(); startGame(); });
-confirmCancel.addEventListener('click', closeConfirm);
+for (const [id, kind] of [['startArrow', 'arrow'], ['startCannon', 'cannon']]) {
+  $(id).addEventListener('click', () => {
+    if (!confirmBox.open) return;
+    confirmBox.close();
+    startGame(kind);
+  });
+}
+confirmCancel.addEventListener('click', () => { if (state) confirmBox.close(); });
+confirmBox.addEventListener('cancel', (event) => { if (!state) event.preventDefault(); });
+confirmBox.addEventListener('close', render);
 document.addEventListener('keydown', (event) => {
-  if (!confirmOpen) {
-    if (event.key === 'Escape' && hammerArmed) { event.preventDefault(); disarmHammer(); completedMessage(); render(); }
-    return;
+  if (confirmBox.open && event.key === 'Enter' && event.repeat) event.preventDefault();
+  if (!confirmBox.open && event.key === 'Escape' && activeTool) {
+    event.preventDefault();
+    cancelToolSelection();
   }
-  if (event.key === 'Escape') { event.preventDefault(); closeConfirm(); }
-  else if (event.key === 'Enter' && event.repeat) event.preventDefault(); // a held key must not confirm by itself
-  else if (event.key === 'Enter' && document.activeElement !== confirmCancel) { event.preventDefault(); closeConfirm(); startGame(); }
-  else if (event.key === 'Tab') { event.preventDefault(); (document.activeElement === confirmStart ? confirmCancel : confirmStart).focus({ preventScroll: true }); }
 });
-$('newGameButton').addEventListener('click', requestNewGame); $('retryButton').addEventListener('click', () => startGame());
+$('newGameButton').addEventListener('click', () => { if (state) showLoadout(); });
+$('retryButton').addEventListener('click', () => showLoadout());
 $('helpButton').addEventListener('click', () => {
-  if (hammerArmed) { disarmHammer(); completedMessage(); render(); }
+  if (activeTool) { disarmTool(); completedMessage(); render(); }
   refreshHistory();
   $('helpDialog').showModal();
 });

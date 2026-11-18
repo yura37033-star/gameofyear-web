@@ -9,12 +9,11 @@
 // in tests/persistence.test.mjs detects changes in a game's continuation.
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
-  movePieceAlongPath, previewMovePath, previewRotation, rotatePiece,
-} from './game.mjs?v=a0-1b2f87c23d';
+  TOOL_CELL_POINTS, TOOL_CHARGES, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece,
+} from './game.mjs?v=a1-de0f23cea3';
 
 export const SCHEMA_VERSION = 1;
-export const RULES_VERSION = 2;
-const PREVIOUS_RULES_VERSION = 1;
+export const RULES_VERSION = 3;
 export const MAX_GAME_RECORD_BYTES = 64 * 1024;
 export const MAX_PIECES = 200;
 export const TRIAL_SIZE = Object.freeze({ cols: 8, rows: 12 });
@@ -102,7 +101,7 @@ export function serializeGame(state, { bestAtStart = 0, savedAt = 0 } = {}) {
     _trialColor: state._trialColor ?? null,
   };
   if (state.trial === true) {
-    out.hammersRemaining = state.hammersRemaining === undefined ? HAMMER_CHARGES : state.hammersRemaining;
+    out.tools = state.tools.map(({ kind, charges }) => ({ kind, charges }));
     out._debutRowsReserved = state._debutRowsReserved ?? 0;
     out._droughtTurns = state._droughtTurns ?? 0;
     out._droughtRescueIssued = state._droughtRescueIssued === true;
@@ -355,14 +354,27 @@ function witnessReplays(state) {
   return actionFromSignature(next, witness.second) !== null;
 }
 
-function validateState(raw, migrating) {
+function validateToolSlots(tools) {
+  need(Array.isArray(tools) && tools.length === 2, 'tools');
+  return tools.map((slot, index) => {
+    onlyKeys(slot, ['kind', 'charges']);
+    const { kind, charges } = slot;
+    need(index === 0 ? kind === 'hammer' : kind === 'arrow' || kind === 'cannon', 'tool-kind');
+    need(isInt(charges, 0, TOOL_CHARGES[kind]), 'tool-charges');
+    return { kind, charges };
+  });
+}
+
+function validateState(raw, version) {
   need(isObject(raw), 'state');
   const trial = raw.trial;
+  const oldRules = version < RULES_VERSION;
   need(typeof trial === 'boolean', 'trial');
   onlyKeys(raw,
     ['cols', 'rows', 'palette', 'pieces', 'nextRow', 'nextRowKind', 'score', 'turn', 'status', 'trial',
-      'skipNextRise', 'skipRiseUsed', '_trialColor', '_rng', '_nextId', ...(trial ? ['_debutRowsReserved', '_droughtTurns', '_droughtRescueIssued', '_witness'] : [])],
-    trial ? ['hammersRemaining', '_rowsPrepared', '_rainbowRows', '_rainbowFirstDone'] : ['_witness']);
+      'skipNextRise', 'skipRiseUsed', '_trialColor', '_rng', '_nextId',
+      ...(trial ? ['_debutRowsReserved', '_droughtTurns', '_droughtRescueIssued', '_witness', ...(oldRules ? [] : ['tools'])] : [])],
+    trial ? ['_rowsPrepared', '_rainbowRows', '_rainbowFirstDone', ...(oldRules ? ['hammersRemaining'] : [])] : ['_witness']);
   const size = trial ? TRIAL_SIZE : CLASSIC_SIZE;
   need(raw.cols === size.cols && raw.rows === size.rows, 'size');
   const { cols, rows } = size;
@@ -373,7 +385,7 @@ function validateState(raw, migrating) {
   need(raw.status === 'playing' || raw.status === 'gameover', 'status');
   need(typeof raw.skipNextRise === 'boolean' && typeof raw.skipRiseUsed === 'boolean', 'flags');
   need(raw.nextRowKind === 'regular' || raw.nextRowKind === 'rescue', 'next-row-kind');
-  need(isInt(raw.score) && raw.score % 100 === 0, 'score');
+  need(isInt(raw.score) && raw.score % (trial && !oldRules ? TOOL_CELL_POINTS : 100) === 0, 'score');
   need(isInt(raw.turn), 'turn');
   need(isUint32(raw._rng), 'rng');
   need(isInt(raw._nextId, 1, MAX_NUMBER), 'next-id');
@@ -395,15 +407,21 @@ function validateState(raw, migrating) {
     _trialColor: raw._trialColor,
   };
   if (trial) {
-    const hammersRemaining = raw.hammersRemaining === undefined ? HAMMER_CHARGES : raw.hammersRemaining;
-    need(isInt(hammersRemaining, 0, HAMMER_CHARGES), 'hammers-remaining');
+    let tools;
+    if (oldRules) {
+      const hammersRemaining = raw.hammersRemaining === undefined ? HAMMER_CHARGES : raw.hammersRemaining;
+      need(isInt(hammersRemaining, 0, HAMMER_CHARGES), 'hammers-remaining');
+      tools = makeToolSlots('arrow', hammersRemaining);
+    } else {
+      tools = validateToolSlots(raw.tools);
+    }
     need(isInt(raw._debutRowsReserved, 0, MAX_DEBUT_ROWS), 'debut-rows');
     need(raw._debutRowsReserved === 0 || raw.score >= COLOR_DEBUT_SCORE, 'debut-score');
     need(isInt(raw._droughtTurns, 0, MAX_DROUGHT_TURNS), 'drought-turns');
     need(typeof raw._droughtRescueIssued === 'boolean', 'drought-issued');
     need(!raw._droughtRescueIssued || raw._droughtTurns === MAX_DROUGHT_TURNS, 'drought-issued-turns');
     state._debutRowsReserved = raw._debutRowsReserved;
-    state.hammersRemaining = hammersRemaining;
+    state.tools = tools;
     state._droughtTurns = raw._droughtTurns;
     state._droughtRescueIssued = raw._droughtRescueIssued;
 
@@ -435,7 +453,7 @@ function validateState(raw, migrating) {
     }
     if (state.status === 'playing' && !witnessReplays(state)) {
       // After the rainbow unlock, the new clearing rule can invalidate a v1 hint.
-      need(migrating && state.score >= RAINBOW_SCORE, 'witness-replay');
+      need(version === 1 && state.score >= RAINBOW_SCORE, 'witness-replay');
       state._witness = null;
     }
   } else {
@@ -449,12 +467,12 @@ export function parseGame(value) {
   try {
     onlyKeys(value, ['schemaVersion', 'rulesVersion', 'savedAt', 'bestAtStart', 'state']);
     need(value.schemaVersion === SCHEMA_VERSION, 'schema-version');
-    const migrating = value.rulesVersion === PREVIOUS_RULES_VERSION;
+    const migrating = value.rulesVersion === 1 || value.rulesVersion === 2;
     need(migrating || value.rulesVersion === RULES_VERSION, 'rules-version');
     need(isInt(value.savedAt, 0, Number.MAX_SAFE_INTEGER) && isInt(value.bestAtStart), 'record-numbers');
     need(isObject(value.state) && Array.isArray(value.state.pieces) && value.state.pieces.length <= MAX_PIECES, 'pieces-size');
     need(JSON.stringify(value).length <= MAX_GAME_RECORD_BYTES, 'too-large');
-    const state = validateState(value.state, migrating);
+    const state = validateState(value.state, value.rulesVersion);
     return { ok: true, state, bestAtStart: value.bestAtStart, savedAt: value.savedAt, migrated: migrating };
   } catch (error) {
     return fail(error instanceof Invalid ? error.message : 'invalid');

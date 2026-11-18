@@ -1,7 +1,9 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=a0-1b2f87c23d';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=a1-de0f23cea3';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3;
+export const TOOL_CHARGES = Object.freeze({ hammer: HAMMER_CHARGES, arrow: 1, cannon: 1 });
+export const TOOL_CELL_POINTS = 10;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
 // Rainbow strip (DEMO_PLAN.md section 13). RAINBOW_COLOR is not a palette colour: it is a
@@ -329,11 +331,10 @@ function findClearableRows(pieces, cols, rows) {
   });
 }
 
-function clearRows(pieces, clearRows, nextId) {
-  const removedRows = new Set(clearRows);
+function removeCells(pieces, shouldRemove, nextId) {
   const nextPieces = [];
   for (const piece of pieces) {
-    const remaining = piece.cells.filter((cell) => !removedRows.has(cell.y));
+    const remaining = piece.cells.filter((cell) => !shouldRemove(cell));
     if (!remaining.length) continue;
     if (remaining.length === piece.cells.length) {
       nextPieces.push(clonePiece(piece));
@@ -359,7 +360,8 @@ function resolvePhysics(pieces, state, events, idFactory) {
     current = settle(current, state.rows, events);
     const rows = findClearableRows(current, state.cols, state.rows);
     if (!rows.length) break;
-    current = clearRows(current, rows, idFactory);
+    const clearedRows = new Set(rows);
+    current = removeCells(current, (cell) => clearedRows.has(cell.y), idFactory);
     score += rows.length * 100;
     addSnapshotEvent(events, { type: 'clear', rows: [...rows] }, current);
   }
@@ -954,7 +956,12 @@ function selectTrialPreview(state, random) {
   return finish(fallbackRow, 'regular', false, null, fallbackRng);
 }
 
-export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE, trial = false } = {}) {
+export function makeToolSlots(lineTool = 'arrow', hammerCharges = HAMMER_CHARGES) {
+  if (lineTool !== 'arrow' && lineTool !== 'cannon') throw new RangeError('Unknown line tool');
+  return [{ kind: 'hammer', charges: hammerCharges }, { kind: lineTool, charges: TOOL_CHARGES[lineTool] }];
+}
+
+export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE, trial = false, lineTool = 'arrow' } = {}) {
   if (!Number.isInteger(cols) || cols < 4 || !Number.isInteger(rows) || rows < 4) {
     throw new RangeError('cols and rows must be integers of at least 4');
   }
@@ -991,7 +998,7 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
     turn: 0,
     status: 'playing',
     trial: trialEnabled,
-    ...(trialEnabled ? { hammersRemaining: HAMMER_CHARGES } : {}),
+    ...(trialEnabled ? { tools: makeToolSlots(lineTool) } : {}),
     skipNextRise: false,
     skipRiseUsed: false,
     nextRowKind: 'regular',
@@ -1214,26 +1221,44 @@ export function rotatePiece(state, pieceId, direction = 'clockwise') {
   return finalizeMove(state, pieceId, preview, { type: 'rotate', pieceId, direction });
 }
 
+export function toolTargetCells(state, kind, target) {
+  if (kind === 'hammer') return findPiece(state, target)?.cells.map(cloneCell) ?? [];
+  if (kind !== 'arrow' && kind !== 'cannon') return [];
+  const axis = kind === 'arrow' ? 'y' : 'x';
+  const size = kind === 'arrow' ? state.rows : state.cols;
+  if (!Number.isInteger(target) || target < 0 || target >= size) return [];
+  return state.pieces.flatMap((piece) => piece.cells.filter((cell) => cell[axis] === target)).map(cloneCell);
+}
+
 export function useHammer(state, pieceId) {
+  return useTool(state, 'hammer', pieceId);
+}
+
+export function useTool(state, kind, target) {
   if (!state?.trial) return failedMutation(state, 'not-trial');
   if (state.status !== 'playing') return failedMutation(state, 'game-over');
-  if (!Number.isInteger(state.hammersRemaining) || state.hammersRemaining < 0 || state.hammersRemaining > HAMMER_CHARGES) {
-    return failedMutation(state, 'invalid-hammers');
+  const slot = state.tools?.find((item) => item.kind === kind);
+  if (!slot || !Object.hasOwn(TOOL_CHARGES, kind)) return failedMutation(state, 'tool-unavailable');
+  if (!Number.isInteger(slot.charges) || slot.charges < 0 || slot.charges > TOOL_CHARGES[kind]) {
+    return failedMutation(state, kind === 'hammer' ? 'invalid-hammers' : 'invalid-charges');
   }
-  if (state.hammersRemaining === 0) return failedMutation(state, 'no-hammers');
-  const target = findPiece(state, pieceId);
-  if (!target) return failedMutation(state, 'piece-not-found');
+  if (slot.charges === 0) return failedMutation(state, kind === 'hammer' ? 'no-hammers' : 'no-charges');
+  const cells = toolTargetCells(state, kind, target);
+  if (!cells.length) return failedMutation(state, kind === 'hammer' ? 'piece-not-found' : 'empty-target');
 
   const events = [];
-  const pieces = state.pieces.filter((piece) => piece.id !== pieceId).map(clonePiece);
-  addSnapshotEvent(events, { type: 'hammer', pieceId }, pieces);
   const idFactory = makeIdFactory(state._nextId ?? 1);
+  const coordinates = new Set(cells.map(({ x, y }) => `${x},${y}`));
+  const pieces = removeCells(state.pieces, ({ x, y }) => coordinates.has(`${x},${y}`), idFactory.next);
+  const gain = cells.length * TOOL_CELL_POINTS;
+  const action = kind === 'hammer' ? { type: 'hammer', pieceId: target } : { type: 'tool', kind, target };
+  addSnapshotEvent(events, { ...action, cells, gain }, pieces);
   const physics = resolvePhysics(pieces, state, events, idFactory.next);
   const nextState = {
     ...state,
     pieces: physics.pieces,
-    score: state.score + physics.score,
-    hammersRemaining: state.hammersRemaining - 1,
+    score: state.score + gain + physics.score,
+    tools: state.tools.map((item) => item === slot ? { ...item, charges: item.charges - 1 } : item),
     _nextId: idFactory.value(),
     _witness: null,
   };

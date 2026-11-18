@@ -10,7 +10,7 @@
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   movePieceAlongPath, previewMovePath, previewRotation, rotatePiece,
-} from './game.mjs?v=rainbow-8b400d4828';
+} from './game.mjs?v=a0-1b2f87c23d';
 
 export const SCHEMA_VERSION = 1;
 export const RULES_VERSION = 2;

@@ -3,9 +3,10 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'a0-1b2f87c23d';
+export const BUILD_ID = 'a1-de0f23cea3';
 // Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
 const RAINBOW_COLOR = 'rainbow';
+const TOOL_LIMITS = { hammer: { cells: 4, charges: 3 }, arrow: { cells: 8, charges: 1 }, cannon: { cells: 12, charges: 1 } };
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones
 
 export function createJournal() {
@@ -50,7 +51,7 @@ const hasRainbowRow = (state) => Array.isArray(state?.nextRow) && state.nextRow.
 
 export function startGameLog(journal, { seed, mode, startedAt, startedLabel, device, build = BUILD_ID } = {}) {
   const previous = latestGame(journal);
-  if (previous && !previous.end && previous.turns.length === 0 && !previous.hammers?.length) journal.games.pop(); // an untouched game is not worth a journal slot
+  if (previous && !previous.end && previous.turns.length === 0 && !previous.tools?.length) journal.games.pop(); // an untouched game is not worth a journal slot
   else if (previous && !previous.end) previous.end = { reason: 'abandoned', endedAt: startedAt ?? null, score: null };
   const game = {
     build: String(build), seed: seed >>> 0, mode: String(mode ?? ''), startedAt: startedAt ?? null,
@@ -105,24 +106,27 @@ export function recordTurn(journal, {
   return turn;
 }
 
-// A hammer is a successful bonus action outside the ordinary turn counter.
-// Keep it separate from moves/rotations and retain only primitive values.
-export function recordHammer(journal, { before, after, result } = {}) {
+// Successful tools are recorded separately from turns, in the order they were used.
+export function recordTool(journal, { before, after, result } = {}) {
   const game = latestGame(journal);
-  if (!game || game.end || (game.hammers?.length ?? 0) >= 3 || !before || !after || before.turn !== after.turn) return null;
+  if (!game || game.end || !result?.changed || !before || !after || before.turn !== after.turn) return null;
   const events = result?.events ?? [];
-  const hammer = events[0];
-  if (hammer?.type !== 'hammer' || !Array.isArray(hammer.pieces)) return null;
-  if (!Number.isSafeInteger(after.hammersRemaining) || after.hammersRemaining < 0 || after.hammersRemaining > 2) return null;
-  const target = before.pieces?.find((item) => item.id === hammer.pieceId);
-  if (!target || !Array.isArray(target.cells) || target.cells.length < 1 || target.cells.length > 4) return null;
+  const strike = events[0];
+  const kind = strike?.type === 'hammer' ? 'hammer' : strike?.type === 'tool' ? strike.kind : null;
+  if (!Object.hasOwn(TOOL_LIMITS, kind) || !Array.isArray(strike.cells)) return null;
+  const cells = strike.cells.length;
+  const remaining = after.tools?.find((slot) => slot.kind === kind)?.charges;
+  if (!isCount(remaining, TOOL_LIMITS[kind].charges - 1) || cells < 1 || cells > TOOL_LIMITS[kind].cells) return null;
+  if (!toolFits(game.tools ?? [], kind)) return null;
 
   let rows = 0;
   for (const event of events) if (event.type === 'clear' && Array.isArray(event.rows)) rows += event.rows.length;
   const gameOver = events.find((event) => event.type === 'gameover');
   const entry = {
     n: after.turn,
-    pieceLength: target.cells.length,
+    kind,
+    cells,
+    ...(kind === 'hammer' ? {} : { target: strike.target }),
     score: after.score,
     gain: after.score - before.score,
     rows,
@@ -130,24 +134,24 @@ export function recordHammer(journal, { before, after, result } = {}) {
     hAfter: stackHeight(after),
     refill: events.some((event) => event.type === 'refill'),
     colors: colorCount(after),
-    remaining: after.hammersRemaining,
+    remaining,
     over: gameOver ? (gameOver.reason ?? 'top-row') : null,
   };
-  (game.hammers ??= []).push(entry);
+  (game.tools ??= []).push(entry);
   return entry;
 }
 
-function latestAction(turns, hammers) {
+function latestAction(turns, tools) {
   const turn = turns.at(-1) ?? null;
-  const hammer = hammers.at(-1) ?? null;
-  // Hammer follows the ordinary move when both actions share the same turn number.
-  return hammer && (!turn || hammer.n >= turn.n) ? hammer : turn;
+  const tool = tools.at(-1) ?? null;
+  // An ordinary action is logged before any tool on the same turn.
+  return tool && (!turn || tool.n >= turn.n) ? tool : turn;
 }
 
 export function finishGameLog(journal, finalState, { endedAt = null } = {}) {
   const game = latestGame(journal);
   if (!game || game.end) return null;
-  const last = latestAction(game.turns, game.hammers ?? []);
+  const last = latestAction(game.turns, game.tools ?? []);
   const reason = last?.over ?? (finalState?.status === 'gameover' ? 'top-row' : 'abandoned');
   game.end = { reason, endedAt, score: finalState?.score ?? last?.score ?? 0 };
   return game;
@@ -155,10 +159,10 @@ export function finishGameLog(journal, finalState, { endedAt = null } = {}) {
 
 export function summarizeGame(game) {
   const turns = game.turns;
-  const hammers = game.hammers ?? [];
+  const tools = game.tools ?? [];
   const first = (predicate) => turns.find(predicate)?.n ?? null;
   const durationMs = game.end?.endedAt != null && game.startedAt != null ? game.end.endedAt - game.startedAt : null;
-  const last = latestAction(turns, hammers);
+  const last = latestAction(turns, tools);
   const earliest = (...values) => {
     const candidates = values.filter((value) => value != null);
     return candidates.length ? Math.min(...candidates) : null;
@@ -167,11 +171,11 @@ export function summarizeGame(game) {
     build: game.build, seed: game.seed, mode: game.mode, startedAt: game.startedAt, device: game.device,
     turns: turns.length,
     score: game.end?.score ?? last?.score ?? 0,
-    rows: turns.reduce((sum, turn) => sum + turn.rows, 0) + hammers.reduce((sum, hammer) => sum + hammer.rows, 0),
+    rows: turns.reduce((sum, turn) => sum + turn.rows, 0) + tools.reduce((sum, tool) => sum + tool.rows, 0),
     reason: game.end?.reason ?? 'playing',
-    maxStack: Math.max(turns.reduce((max, turn) => Math.max(max, turn.hBefore, turn.hAfter), 0), hammers.reduce((max, hammer) => Math.max(max, hammer.hBefore, hammer.hAfter), 0)),
-    firstClear: earliest(first((turn) => turn.rows > 0), hammers.find((hammer) => hammer.rows > 0)?.n),
-    secondColor: earliest(first((turn) => turn.colors > 1), hammers.find((hammer) => hammer.colors > 1)?.n),
+    maxStack: Math.max(turns.reduce((max, turn) => Math.max(max, turn.hBefore, turn.hAfter), 0), tools.reduce((max, tool) => Math.max(max, tool.hBefore, tool.hAfter), 0)),
+    firstClear: earliest(first((turn) => turn.rows > 0), tools.find((tool) => tool.rows > 0)?.n),
+    secondColor: earliest(first((turn) => turn.colors > 1), tools.find((tool) => tool.colors > 1)?.n),
     rotations: turns.filter((turn) => turn.kind === 'rotate').length,
     hints: turns.reduce((sum, turn) => sum + turn.hints, 0),
     rescueRows: turns.filter((turn) => turn.rescueInserted).length,
@@ -179,9 +183,14 @@ export function summarizeGame(game) {
     pauseTurn: first((turn) => turn.pause),
     durationMs,
   };
+  const hammers = tools.filter((tool) => tool.kind === 'hammer');
   if (hammers.length) {
     summary.hammers = hammers.length;
     summary.hammerRows = hammers.reduce((sum, hammer) => sum + hammer.rows, 0);
+  }
+  for (const kind of ['arrow', 'cannon']) {
+    const count = tools.filter((tool) => tool.kind === kind).length;
+    if (count) summary[kind] = count;
   }
   return summary;
 }
@@ -215,28 +224,30 @@ export function formatTurn(turn) {
   ].join(' ');
 }
 
-export function formatHammer(hammer) {
-  return `B${hammer.n} x${hammer.pieceLength} +${hammer.gain} r${hammer.rows} h${hammer.hBefore}>${hammer.hAfter}${hammer.refill ? ' F' : ''}${hammer.over ? ' X' : ''} left=${hammer.remaining}`;
+function formatTool(tool) {
+  const target = tool.kind === 'hammer' ? `B${tool.n}`
+    : tool.kind === 'arrow' ? `A${tool.n} r${tool.target + 1}` : `C${tool.n} c${tool.target + 1}`;
+  return `${target} x${tool.cells} +${tool.gain} r${tool.rows} h${tool.hBefore}>${tool.hAfter}${tool.refill ? ' F' : ''}${tool.over ? ' X' : ''} left=${tool.remaining}`;
 }
 
-function hasHammers(game) { return (game.hammers?.length ?? 0) > 0; }
-
-function hammerLegend() {
-  return 'B<n> x<size> +gain rN h<before>><after> F refill, X game over, left=remaining';
+function reportLegend(games) {
+  const tools = games.flatMap((game) => game.tools ?? []);
+  return LEGEND
+    + (tools.some((tool) => tool.kind === 'hammer') ? ' | hammer: B<n> x<size> +gain rN h<before>><after> F refill, X game over, left=remaining' : '')
+    + (tools.some((tool) => tool.kind !== 'hammer') ? ' | line tools: A<n> r<row> or C<n> c<column>, x<cells> +gain rN h<before>><after> F refill, X game over, left=remaining' : '');
 }
 
 function reportActions(game) {
   const lines = [];
   let turnIndex = 0;
-  let hammerIndex = 0;
-  const hammers = game.hammers ?? [];
-  while (turnIndex < game.turns.length || hammerIndex < hammers.length) {
+  let toolIndex = 0;
+  const tools = game.tools ?? [];
+  while (turnIndex < game.turns.length || toolIndex < tools.length) {
     const turn = game.turns[turnIndex];
-    const hammer = hammers[hammerIndex];
-    // A hammer follows the preceding normal action when both share a turn number.
-    if (hammer && (!turn || hammer.n < turn.n)) {
-      lines.push(formatHammer(hammer));
-      hammerIndex += 1;
+    const tool = tools[toolIndex];
+    if (tool && (!turn || tool.n < turn.n)) {
+      lines.push(formatTool(tool));
+      toolIndex += 1;
     } else {
       lines.push(formatTurn(turn));
       turnIndex += 1;
@@ -253,12 +264,14 @@ export function formatHeader(game) {
     + ` clear1=${orDash(s.firstClear)} col2=${orDash(s.secondColor)} rot=${s.rotations} hint=${s.hints}`
     + ` resc=${s.rescueRows} dbl=${s.doublings} pause=${orDash(s.pauseTurn)}`
     + (s.hammers ? ` hammer=${s.hammers} hrows=${s.hammerRows}` : '')
+    + (s.arrow ? ` arrow=${s.arrow}` : '')
+    + (s.cannon ? ` cannon=${s.cannon}` : '')
     + ` dur=${s.durationMs == null ? '-' : `${Math.round(s.durationMs / 1000)}s`} dev=${s.device}`;
 }
 
 export function formatReport(game, { legend = true } = {}) {
   const lines = [];
-  if (legend) lines.push(hasHammers(game) ? `${LEGEND} | hammer: ${hammerLegend()}` : LEGEND);
+  if (legend) lines.push(reportLegend([game]));
   lines.push(formatHeader(game), ...reportActions(game));
   return `${lines.join('\n')}\n`;
 }
@@ -267,7 +280,7 @@ export function formatReport(game, { legend = true } = {}) {
 export function formatAll(journal) {
   const games = [...journal.games].reverse();
   if (!games.length) return `${LEGEND}\n`;
-  const legend = games.some(hasHammers) ? `${LEGEND} | hammer: ${hammerLegend()}` : LEGEND;
+  const legend = reportLegend(games);
   return `${legend}\n${games.map((game) => formatReport(game, { legend: false })).join('\n')}`;
 }
 
@@ -303,8 +316,38 @@ function importTurn(turn) {
   return copy;
 }
 
+function toolFits(entries, kind) {
+  if (kind !== 'hammer') return entries.every((entry) => entry.kind === 'hammer');
+  return entries.filter((entry) => entry.kind === 'hammer').length < TOOL_LIMITS.hammer.charges;
+}
+
+function importTools(tools, legacyHammers) {
+  const legacy = legacyHammers !== undefined;
+  if (legacy && tools !== undefined) return null;
+  const source = legacy ? legacyHammers : tools;
+  if (!Array.isArray(source) || source.length > (legacy ? 3 : 4)) return null;
+  const baseKeys = ['n', 'score', 'gain', 'rows', 'hBefore', 'hAfter', 'refill', 'colors', 'remaining', 'over'];
+  const accepted = [];
+  for (const entry of source) {
+    const kind = legacy ? 'hammer' : entry?.kind;
+    if (!Object.hasOwn(TOOL_LIMITS, kind) || !toolFits(accepted, kind)) return null;
+    const fields = legacy ? ['pieceLength'] : kind === 'hammer' ? ['kind', 'cells'] : ['kind', 'cells', 'target'];
+    if (!onlyKeys(entry, [...baseKeys, ...fields])) return null;
+    if (!['n', 'score', 'gain', 'rows', 'hBefore', 'hAfter'].every((key) => isCount(entry[key]))) return null;
+    const cells = legacy ? entry.pieceLength : entry.cells;
+    const limits = TOOL_LIMITS[kind];
+    if (!isCount(cells, limits.cells) || cells === 0 || !isCount(entry.colors, 4) || !isCount(entry.remaining, limits.charges - 1)) return null;
+    if (kind !== 'hammer' && !isCount(entry.target, kind === 'arrow' ? 11 : 7)) return null;
+    if (typeof entry.refill !== 'boolean' || (entry.over !== null && !isText(entry.over, 24))) return null;
+    if (accepted.length && entry.n < accepted.at(-1).n) return null;
+    const { pieceLength, ...fieldsWithoutLegacy } = entry;
+    accepted.push({ ...fieldsWithoutLegacy, kind, cells });
+  }
+  return accepted;
+}
+
 function importGame(game) {
-  const { hammers, ...baseGame } = game ?? {};
+  const { hammers, tools, ...baseGame } = game ?? {};
   if (!onlyKeys(baseGame, ['build', 'seed', 'mode', 'startedAt', 'startedLabel', 'device', 'turns', 'end'])) return null;
   if (!isText(game.build, 40) || !isText(game.mode, 40) || !isText(game.device, 80)) return null;
   if (!Number.isSafeInteger(game.seed) || game.seed < 0 || game.seed > 0xFFFFFFFF) return null;
@@ -317,20 +360,8 @@ function importGame(game) {
     if (!imported) return null;
     turns.push(imported);
   }
-  let importedHammers;
-  if (hammers !== undefined) {
-    if (!Array.isArray(hammers) || hammers.length > 3) return null;
-    importedHammers = [];
-    for (const hammer of hammers) {
-      if (!onlyKeys(hammer, ['n', 'pieceLength', 'score', 'gain', 'rows', 'hBefore', 'hAfter', 'refill', 'colors', 'remaining', 'over'])) return null;
-      if (!['n', 'pieceLength', 'score', 'rows', 'hBefore', 'hAfter', 'colors', 'remaining'].every((key) => isCount(hammer[key]))) return null;
-      if (!isCount(hammer.gain) || hammer.pieceLength < 1 || hammer.pieceLength > 4 || hammer.remaining > 2 || hammer.colors > 4) return null;
-      if (typeof hammer.refill !== 'boolean') return null;
-      if (hammer.over !== null && !isText(hammer.over, 24)) return null;
-      if (importedHammers.length && hammer.n < importedHammers.at(-1).n) return null;
-      importedHammers.push({ ...hammer });
-    }
-  }
+  const importedTools = tools !== undefined || hammers !== undefined ? importTools(tools, hammers) : undefined;
+  if (importedTools === null) return null;
   let end = null;
   if (game.end !== null) {
     if (!onlyKeys(game.end, ['reason', 'endedAt', 'score']) || !isText(game.end.reason, 24)) return null;
@@ -342,7 +373,7 @@ function importGame(game) {
     build: game.build, seed: game.seed, mode: game.mode, startedAt: game.startedAt, startedLabel: game.startedLabel,
     device: game.device, turns, end,
   };
-  if (importedHammers !== undefined) imported.hammers = importedHammers;
+  if (importedTools !== undefined) imported.tools = importedTools;
   return imported;
 }
 

@@ -7,6 +7,7 @@
 export const STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game', journal: 'kr.journal' });
 export const HAMMER_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.hammer', journal: 'kr.journal.hammer' });
 export const RULES_V2_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.hammer.v2', journal: 'kr.journal.hammer.v2' });
+export const RULES_V3_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.tools.v3', journal: 'kr.journal.tools.v3' });
 export const STORAGE_LIMITS = Object.freeze({
   'kr.best': 1024,
   'kr.game': 64 * 1024,
@@ -15,6 +16,8 @@ export const STORAGE_LIMITS = Object.freeze({
   'kr.journal.hammer': 600 * 1024,
   'kr.game.hammer.v2': 64 * 1024,
   'kr.journal.hammer.v2': 600 * 1024,
+  'kr.game.tools.v3': 64 * 1024,
+  'kr.journal.tools.v3': 600 * 1024,
 });
 const PROBE_KEY = 'kr.probe';
 const DEFAULT_LIMIT = 64 * 1024;
