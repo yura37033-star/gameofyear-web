@@ -1,4 +1,4 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=rainbow-d6dc18844b';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=rainbow-8b400d4828';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3;
@@ -324,11 +324,8 @@ function findClearableRows(pieces, cols, rows) {
   }
   return byRow.flatMap((cells, y) => {
     if (cells.size !== cols) return [];
-    // A rainbow cell matches any colour; a row of rainbow cells only also clears.
     const colors = new Set(cells.values());
-    colors.delete(RAINBOW_COLOR);
-    if (colors.size > 1) return [];
-    return [y];
+    return colors.size === 1 || colors.has(RAINBOW_COLOR) ? [y] : [];
   });
 }
 
@@ -677,7 +674,7 @@ function makePlacementPotential(state, piece) {
     const rowScores = [];
     for (const y of affectedRows) {
       const counts = new Map();
-      let wildcards = 0; // rainbow cells fit any colour and are not a colour of their own
+      let wildcards = 0;
       const addCell = (color) => {
         if (color === RAINBOW_COLOR) wildcards += 1;
         else counts.set(color, (counts.get(color) ?? 0) + 1);
@@ -685,8 +682,8 @@ function makePlacementPotential(state, piece) {
       for (const color of rows[y].values()) addCell(color);
       for (const cell of cells) if (cell.y === y) addCell(piece.color);
       const occupied = [...counts.values()].reduce((sum, count) => sum + count, 0) + wildcards;
-      const largest = Math.max(0, ...counts.values()) + wildcards;
-      rowScores.push(occupied === state.cols && counts.size <= 1 ? 10000 : largest * largest);
+      const matching = wildcards > 0 ? occupied : Math.max(0, ...counts.values());
+      rowScores.push(matching === state.cols ? 10000 : matching * matching);
     }
     return rowScores.reduce((sum, value) => sum + value, 0);
   };

@@ -1,8 +1,8 @@
-import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=rainbow-8b400d4828';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=rainbow-8b400d4828';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=rainbow-8b400d4828';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=rainbow-8b400d4828';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=rainbow-8b400d4828';
+import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=a0-1b2f87c23d';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=a0-1b2f87c23d';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=a0-1b2f87c23d';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=a0-1b2f87c23d';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=a0-1b2f87c23d';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');

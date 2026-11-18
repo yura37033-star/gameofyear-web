@@ -1,8 +1,8 @@
-import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=rainbow-d6dc18844b';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=rainbow-d6dc18844b';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=rainbow-d6dc18844b';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=rainbow-d6dc18844b';
-import { HAMMER_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=rainbow-d6dc18844b';
+import { COLOR_DEBUT_SCORE, HAMMER_CHARGES, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, useHammer } from './core/game.mjs?v=rainbow-8b400d4828';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=rainbow-8b400d4828';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordHammer, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=rainbow-8b400d4828';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=rainbow-8b400d4828';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=rainbow-8b400d4828';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -91,10 +91,14 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const stored = await storage.load(STORAGE_KEYS[slot]);
-  if (stored.ok || stored.reason !== 'missing') return stored;
-  const legacy = await storage.load(LEGACY_STORAGE_KEYS[slot]);
-  return legacy.ok ? { ...legacy, legacy: true } : legacy;
+  const keys = [STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  for (let index = 0; index < keys.length; index += 1) {
+    const stored = await storage.load(keys[index]);
+    if (stored.reason === 'missing') continue;
+    if (stored.ok && index > 0) return { ...stored, legacy: true };
+    return stored;
+  }
+  return { ok: false, reason: 'missing' };
 }
 function hasProgress(game) {
   return game.turn > 0 || (game.hammersRemaining ?? HAMMER_CHARGES) < HAMMER_CHARGES;
@@ -488,7 +492,7 @@ async function initGame() {
     refreshHistory();
   });
   installState(record.state, hasProgress(record.state) ? 'Партію відновлено.' : '', true);
-  if (gameRead.legacy) persistGame();
+  if (gameRead.legacy || record.migrated) persistGame();
   persistBest(); persistJournal();
 }
 async function commit(result, initialScene = scene) {
