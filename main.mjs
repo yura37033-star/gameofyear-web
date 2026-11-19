@@ -1,9 +1,9 @@
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=wallet-8b68f623fb';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=wallet-8b68f623fb';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=wallet-8b68f623fb';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=wallet-8b68f623fb';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=wallet-8b68f623fb';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=wallet-8b68f623fb';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=lamp-91fcf373ec';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=lamp-91fcf373ec';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=lamp-91fcf373ec';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=lamp-91fcf373ec';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=lamp-91fcf373ec';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=lamp-91fcf373ec';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -18,7 +18,7 @@ let cell = 28, busy = false, actionEpoch = 0, activePhase = null, rotationTween 
 let tween = null, animationFrame = 0, renderRequest = 0;
 let previewTween = null, previewFrame = 0;
 let hintDirection = 'clockwise';
-let suggestion = null, suggestionFrame = 0, hintVisible = true;
+let suggestion = null, suggestionFrame = 0, hintVisible = true, hintPressedTurn = -1; // hintPressedTurn: the turn in which the lamp was pressed (calms the alert until the next turn)
 const hintButton = $('hintButton');
 let toolButtons = []; // one button per slot of state.tools (zero to two), built by buildToolButtons
 const toolbar = $('toolbar'), toolActions = $('toolActions'), applyTool = $('applyTool');
@@ -404,6 +404,12 @@ function render() {
   if (!busy) hintVisible = state.trial === true && state.status === 'playing';
   hintButton.classList.toggle('is-off', !hintVisible);
   hintButton.disabled = busy || Boolean(drag || toolGesture) || modalOpen() || !hintVisible;
+  // Lamp alert: a stack of 10+ rows with a verified path, nothing else going on and no hint pressed this turn (CSS animates it).
+  const hintAlert = !hintButton.disabled && !activeTool && !toolPreview && hintPressedTurn !== state.turn && shouldPulseHint(state);
+  if (hintButton.classList.contains('is-alert') !== hintAlert) {
+    hintButton.classList.toggle('is-alert', hintAlert);
+    if (hintAlert) hintButton.dataset.alert = 'true'; else delete hintButton.dataset.alert;
+  }
   for (const [direction, button] of Object.entries(rotationButtons)) {
     button.classList.toggle('hint-target', Boolean(suggestion) && !busy && suggestion.kind === 'rotate' && suggestion.direction === direction);
   }
@@ -472,7 +478,7 @@ function requestHint() {
   if (!state || busy || drag || toolGesture || modalOpen() || state.status !== 'playing' || !hintVisible) return;
   disarmTool();
   const found = suggestAction(state);
-  journalHints++; journalLastHint = found && { kind: found.kind, pieceId: found.pieceId, direction: found.direction, offset: found.offset }; // journal
+  hintPressedTurn = state.turn; journalHints++; journalLastHint = found && { kind: found.kind, pieceId: found.pieceId, direction: found.direction, offset: found.offset }; // journal
   clearSuggestion();
   if (!found) { message('Підказка недоступна: шлях не знайдено.', '', true); render(); return; }
   suggestion = found; selectedId = found.pieceId;
@@ -525,7 +531,7 @@ function finishPlayback() {
 }
 function installState(next, text, restored = false) {
   actionEpoch++; cancelTween(); cancelDrag(); disarmTool(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
-  hintDirection = 'clockwise'; successfulActions = restored ? next.turn : 0; rotated = false; selectHintShown = false;
+  hintDirection = 'clockwise'; hintPressedTurn = -1; successfulActions = restored ? next.turn : 0; rotated = false; selectHintShown = false;
   state = next;
   buildToolButtons();
   journalHints = 0; journalLastHint = null; journalReadyAt = performance.now();

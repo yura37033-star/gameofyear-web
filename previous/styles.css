@@ -142,6 +142,26 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
 .shop-note{margin:3px 0 0!important;min-height:14px;font-size:10px!important;line-height:14px;color:#ffb3b9!important;text-align:left}
 .loadout-summary{margin:10px 0 10px!important;text-align:center;font-size:13px!important;color:#c4d3ea!important}
 .shop-card .primary-button{min-height:48px;justify-content:center;gap:8px}.shop-card .secondary-button{margin-top:8px}
+/* Package B+: the folded wallet backup block of the preparation screen */
+.backup{margin-top:8px;border:1px solid var(--line);border-radius:12px;background:#ffffff04}
+.backup summary{min-height:44px;padding:12px;color:var(--ink);font-size:13px;font-weight:700;cursor:pointer}
+.backup summary:focus-visible{outline:2px solid var(--teal);outline-offset:-2px;border-radius:12px}
+.backup summary::marker{color:var(--teal)}
+.backup-content{padding:0 10px 10px}
+.backup-content .secondary-button{margin-top:0}.backup-content #walletRestoreButton{margin-top:8px}
+.backup-label{display:block;margin:2px 0 4px;font-size:12px;font-weight:700;color:#c4d3ea}
+.backup-hint{margin:0 0 8px;font-size:12px;line-height:1.35;color:#9fb0cc}
+.backup-text{white-space:pre-wrap;word-break:break-all;overflow:auto;margin-top:6px}
+.backup-text[readonly]{margin-bottom:2px}
+.backup-content .copy-status{height:auto;min-height:14px;margin:6px 0 8px}
+.backup-status{margin:6px 0 0!important;min-height:16px;font-size:12px!important;line-height:1.4;text-align:left;color:#81e5cc!important}
+.backup-status.bad{color:#ffb3b9!important}
+.backup-confirm{margin-top:8px;padding:8px 10px;border:1px solid #7ca5d13b;border-radius:10px;background:#6b9fff12}
+.backup-confirm p{margin:0 0 6px;font-size:12px;line-height:1.5;color:#c4d3ea}
+.backup-preview{font-weight:700;font-variant-numeric:tabular-nums}
+.backup-ask{font-weight:700}
+.backup-confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.backup-confirm-actions .secondary-button{margin-top:0}
 @keyframes hint-pulse{0%,100%{outline-color:#d58bff}50%{outline-color:#d58bff40}}@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}@keyframes gain{0%{opacity:0;transform:translate(-50%,12px)}15%,65%{opacity:1}100%{opacity:0;transform:translate(-50%,-24px)}}
 @media (max-width: 850px), (hover: none) and (pointer: coarse) {
   .intro { display: none; }

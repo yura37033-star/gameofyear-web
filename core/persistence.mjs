@@ -13,7 +13,7 @@
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   TOOL_CELL_POINTS, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece, validateToolSlots,
-} from './game.mjs?v=wallet-8b68f623fb';
+} from './game.mjs?v=lamp-91fcf373ec';
 
 export const SCHEMA_VERSION = 1;
 export const RULES_VERSION = 5;

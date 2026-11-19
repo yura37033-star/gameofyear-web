@@ -61,6 +61,18 @@
 }
 .hint-button:hover:not(:disabled) .hint-icon { background: #d58bff26; }
 .hint-button.is-off { display: none; }
+.hint-button.is-alert .hint-icon {
+  /* Static cue first: this is all a player sees with reduced motion (the global rule below removes the animation). */
+  border-color: #d58bff;
+  background: #d58bff33;
+  color: #f6e6ff;
+  box-shadow: 0 0 0 2px #d58bffb0, 0 0 10px #d58bff66;
+  animation: hint-lamp 1.4s ease-in-out infinite;
+}
+@keyframes hint-lamp {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 2px #d58bff80, 0 0 4px #d58bff40; }
+  50% { transform: scale(1.08); box-shadow: 0 0 0 3px #d58bffc0, 0 0 14px #d58bffa0; }
+}
 .new-game-button {
   min-height: 44px;
   padding: 0 8px;

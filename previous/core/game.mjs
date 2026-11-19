@@ -1,4 +1,4 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=a2-858196272c';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=wallet-8b68f623fb';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
