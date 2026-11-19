@@ -7,13 +7,17 @@
 // findTrialWitness, suggestAction). Bump it whenever a change makes the same stored state
 // continue differently. Explicit migrations preserve compatible records. The golden test
 // in tests/persistence.test.mjs detects changes in a game's continuation.
+//
+// Rules 4 (economy, DEMO_PLAN.md section 24) changes no rule of play: a record carries 0-2 tool slots chosen by the player
+// and an optional `coinsPaid` next to savedAt/bestAtStart. The bump keeps the published rules-3 build (which reads the
+// version-3 keys and accepts only rulesVersion 3) from loading such a record.
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
-  TOOL_CELL_POINTS, TOOL_CHARGES, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece,
-} from './game.mjs?v=a1-de0f23cea3';
+  TOOL_CELL_POINTS, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece, validateToolSlots,
+} from './game.mjs?v=economy-5271c0f1ba';
 
 export const SCHEMA_VERSION = 1;
-export const RULES_VERSION = 3;
+export const RULES_VERSION = 4;
 export const MAX_GAME_RECORD_BYTES = 64 * 1024;
 export const MAX_PIECES = 200;
 export const TRIAL_SIZE = Object.freeze({ cols: 8, rows: 12 });
@@ -79,7 +83,9 @@ function serializeWitness(witness) {
 
 // Returns a plain JSON-safe record. Throws only on a state that is not a game state at all
 // (callers wrap it); parseGame is the gatekeeper for everything read back.
-export function serializeGame(state, { bestAtStart = 0, savedAt = 0 } = {}) {
+// `coinsPaid` (integer >= 0) marks a game whose coins were already paid out to the wallet; leave it undefined for a game
+// still in progress. The field is written only when given, so a record without it means "not paid yet".
+export function serializeGame(state, { bestAtStart = 0, savedAt = 0, coinsPaid } = {}) {
   const out = {
     cols: state.cols,
     rows: state.rows,
@@ -112,13 +118,15 @@ export function serializeGame(state, { bestAtStart = 0, savedAt = 0 } = {}) {
   out._rng = state._rng;
   out._nextId = state._nextId;
   if (state._witness !== undefined) out._witness = serializeWitness(state._witness);
-  return {
+  const record = {
     schemaVersion: SCHEMA_VERSION,
     rulesVersion: RULES_VERSION,
     savedAt: Number.isSafeInteger(savedAt) && savedAt >= 0 ? savedAt : 0,
     bestAtStart: Number.isSafeInteger(bestAtStart) && bestAtStart >= 0 ? bestAtStart : 0,
-    state: out,
   };
+  if (Number.isSafeInteger(coinsPaid) && coinsPaid >= 0) record.coinsPaid = coinsPaid;
+  record.state = out;
+  return record;
 }
 
 export function serializeBest(score) {
@@ -354,21 +362,28 @@ function witnessReplays(state) {
   return actionFromSignature(next, witness.second) !== null;
 }
 
-function validateToolSlots(tools) {
-  need(Array.isArray(tools) && tools.length === 2, 'tools');
-  return tools.map((slot, index) => {
-    onlyKeys(slot, ['kind', 'charges']);
-    const { kind, charges } = slot;
-    need(index === 0 ? kind === 'hammer' : kind === 'arrow' || kind === 'cannon', 'tool-kind');
-    need(isInt(charges, 0, TOOL_CHARGES[kind]), 'tool-charges');
-    return { kind, charges };
-  });
+// Slot shape and kinds are checked by the core (validateToolSlots); a record keeps its own reason codes, and the key
+// checks come first so that the detailed reasons (unknown-key, missing-key, not-object) stay available. Rules 3 records
+// can only come from the fixed A1 set, so they keep the old strict shape: a hammer first and then an arrow or a cannon,
+// at most 3 hammer charges and 1 charge of the line tool.
+function validateRecordTools(tools, version) {
+  need(Array.isArray(tools) && tools.length <= 2, 'tools');
+  for (const slot of tools) onlyKeys(slot, ['kind', 'charges']);
+  const checked = validateToolSlots(tools);
+  need(checked.ok, checked.reason);
+  if (version === 3) {
+    need(checked.tools.length === 2, 'tools');
+    const [hammer, line] = checked.tools;
+    need(hammer.kind === 'hammer' && (line.kind === 'arrow' || line.kind === 'cannon'), 'tool-kind');
+    need(hammer.charges <= HAMMER_CHARGES && line.charges <= 1, 'tool-charges');
+  }
+  return checked.tools;
 }
 
 function validateState(raw, version) {
   need(isObject(raw), 'state');
   const trial = raw.trial;
-  const oldRules = version < RULES_VERSION;
+  const oldRules = version < 3; // rules 1 and 2 stored `hammersRemaining` instead of the tool slots and scored in hundreds
   need(typeof trial === 'boolean', 'trial');
   onlyKeys(raw,
     ['cols', 'rows', 'palette', 'pieces', 'nextRow', 'nextRowKind', 'score', 'turn', 'status', 'trial',
@@ -413,7 +428,7 @@ function validateState(raw, version) {
       need(isInt(hammersRemaining, 0, HAMMER_CHARGES), 'hammers-remaining');
       tools = makeToolSlots('arrow', hammersRemaining);
     } else {
-      tools = validateToolSlots(raw.tools);
+      tools = validateRecordTools(raw.tools, version);
     }
     need(isInt(raw._debutRowsReserved, 0, MAX_DEBUT_ROWS), 'debut-rows');
     need(raw._debutRowsReserved === 0 || raw.score >= COLOR_DEBUT_SCORE, 'debut-score');
@@ -465,15 +480,21 @@ function validateState(raw, version) {
 
 export function parseGame(value) {
   try {
-    onlyKeys(value, ['schemaVersion', 'rulesVersion', 'savedAt', 'bestAtStart', 'state']);
+    onlyKeys(value, ['schemaVersion', 'rulesVersion', 'savedAt', 'bestAtStart', 'state'], ['coinsPaid']);
     need(value.schemaVersion === SCHEMA_VERSION, 'schema-version');
-    const migrating = value.rulesVersion === 1 || value.rulesVersion === 2;
+    const migrating = Number.isInteger(value.rulesVersion) && value.rulesVersion >= 1 && value.rulesVersion < RULES_VERSION;
     need(migrating || value.rulesVersion === RULES_VERSION, 'rules-version');
     need(isInt(value.savedAt, 0, Number.MAX_SAFE_INTEGER) && isInt(value.bestAtStart), 'record-numbers');
     need(isObject(value.state) && Array.isArray(value.state.pieces) && value.state.pieces.length <= MAX_PIECES, 'pieces-size');
     need(JSON.stringify(value).length <= MAX_GAME_RECORD_BYTES, 'too-large');
+    // coinsPaid exists only from rules 4 on; absent means the coins of this game were not paid yet.
+    need(value.coinsPaid === undefined || (value.rulesVersion === RULES_VERSION && isInt(value.coinsPaid)), 'coins-paid');
     const state = validateState(value.state, value.rulesVersion);
-    return { ok: true, state, bestAtStart: value.bestAtStart, savedAt: value.savedAt, migrated: migrating };
+    // The payout is 5 per full 100 points plus 10 per full 1000, so it can never exceed 6% of the score.
+    need(value.coinsPaid === undefined || (state.trial && value.coinsPaid * 100 <= state.score * 6), 'coins-paid');
+    const parsed = { ok: true, state, bestAtStart: value.bestAtStart, savedAt: value.savedAt, migrated: migrating };
+    if (value.coinsPaid !== undefined) parsed.coinsPaid = value.coinsPaid;
+    return parsed;
   } catch (error) {
     return fail(error instanceof Invalid ? error.message : 'invalid');
   }

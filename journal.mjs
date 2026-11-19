@@ -3,14 +3,14 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'economy-5271c0f1ba';
+export const BUILD_ID = 'a2-858196272c';
 // Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
 const RAINBOW_COLOR = 'rainbow';
 // A game carries at most 6 charges of at most 2 kinds (DEMO_PLAN.md section 24), so a kind is used at most 6 times; the
 // journal stays free of imports, so these numbers repeat MAX_TOOL_CARRY / MAX_TOOL_KINDS of core/game.mjs (a test keeps them equal).
-const TOOL_LIMITS = { hammer: { cells: 4, charges: 6 }, arrow: { cells: 8, charges: 6 }, cannon: { cells: 12, charges: 6 } };
-const TOOL_ORDER = ['hammer', 'arrow', 'cannon'];
-const TOOL_LETTER = { hammer: 'H', arrow: 'A', cannon: 'C' };
+const TOOL_LIMITS = { hammer: { cells: 4, charges: 6 }, arrow: { cells: 8, charges: 6 }, cannon: { cells: 12, charges: 6 }, areaHammer: { cells: 4, charges: 3 } };
+const TOOL_ORDER = ['hammer', 'arrow', 'cannon', 'areaHammer'];
+const TOOL_LETTER = { hammer: 'H', arrow: 'A', cannon: 'C', areaHammer: 'Q' };
 const MAX_GAME_CHARGES = 6;
 const MAX_GAME_KINDS = 2;
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones
@@ -64,7 +64,7 @@ export function encodeStartSet(tools) {
   let last = -1;
   for (const slot of tools) {
     const index = TOOL_ORDER.indexOf(slot?.kind);
-    if (index <= last || !isCount(slot.charges, MAX_GAME_CHARGES)) return null;
+    if (index <= last || !isCount(slot.charges, TOOL_LIMITS[slot.kind].charges)) return null;
     last = index;
     total += slot.charges;
     if (slot.charges > 0) text += `${TOOL_LETTER[slot.kind]}${slot.charges}`;
@@ -72,12 +72,12 @@ export function encodeStartSet(tools) {
   return total <= MAX_GAME_CHARGES && tools.length <= MAX_GAME_KINDS ? text : null;
 }
 
-// Back from the short text to { hammer, arrow, cannon } counts, or null when the text is not a start set.
+// Back from the short text to counts per tool kind, or null when the text is not a start set.
 function decodeStartSet(text) {
-  if (typeof text !== 'string' || !/^(?:H[1-6])?(?:A[1-6])?(?:C[1-6])?$/.test(text)) return null;
+  if (typeof text !== 'string' || !/^(?:H[1-6])?(?:A[1-6])?(?:C[1-6])?(?:Q[1-3])?$/.test(text)) return null;
   const counts = {};
   let total = 0;
-  for (const [, letter, count] of text.matchAll(/([HAC])([1-6])/g)) {
+  for (const [, letter, count] of text.matchAll(/([HACQ])([1-6])/g)) {
     counts[TOOL_ORDER.find((kind) => TOOL_LETTER[kind] === letter)] = Number(count);
     total += Number(count);
   }
@@ -232,7 +232,7 @@ export function summarizeGame(game) {
     summary.hammers = hammers.length;
     summary.hammerRows = hammers.reduce((sum, hammer) => sum + hammer.rows, 0);
   }
-  for (const kind of ['arrow', 'cannon']) {
+  for (const kind of ['arrow', 'cannon', 'areaHammer']) {
     const count = tools.filter((tool) => tool.kind === kind).length;
     if (count) summary[kind] = count;
   }
@@ -268,8 +268,10 @@ export function formatTurn(turn) {
 }
 
 function formatTool(tool) {
-  const target = tool.kind === 'hammer' ? `B${tool.n}`
-    : tool.kind === 'arrow' ? `A${tool.n} r${tool.target + 1}` : `C${tool.n} c${tool.target + 1}`;
+  let target = `B${tool.n}`;
+  if (tool.kind === 'arrow') target = `A${tool.n} r${tool.target + 1}`;
+  if (tool.kind === 'cannon') target = `C${tool.n} c${tool.target + 1}`;
+  if (tool.kind === 'areaHammer') target = `Q${tool.n} r${Math.floor(tool.target / 8) + 1} c${tool.target % 8 + 1}`;
   return `${target} x${tool.cells} +${tool.gain} r${tool.rows} h${tool.hBefore}>${tool.hAfter}${tool.refill ? ' F' : ''}${tool.over ? ' X' : ''} left=${tool.remaining}`;
 }
 
@@ -278,7 +280,8 @@ function reportLegend(games) {
   const tools = games.flatMap((game) => game.tools ?? []);
   const parts = [];
   if (tools.some((tool) => tool.kind === 'hammer')) parts.push('hammer B<n> x<cells>');
-  if (tools.some((tool) => tool.kind !== 'hammer')) parts.push('A<n> r<row>, C<n> c<col> x<cells>');
+  if (tools.some((tool) => tool.kind === 'arrow' || tool.kind === 'cannon')) parts.push('A<n> r<row>, C<n> c<col> x<cells>');
+  if (tools.some((tool) => tool.kind === 'areaHammer')) parts.push('Q<n> r<row> c<col> 2x2 x<cells>');
   let legend = LEGEND;
   if (parts.length) legend += ` | ${parts.join('; ')}; then +gain rN h<from>><to> F refill X over left=charges`;
   const notes = [];
@@ -317,6 +320,7 @@ export function formatHeader(game) {
     + (s.hammers ? ` hammer=${s.hammers} hrows=${s.hammerRows}` : '')
     + (s.arrow ? ` arrow=${s.arrow}` : '')
     + (s.cannon ? ` cannon=${s.cannon}` : '')
+    + (s.areaHammer ? ` area=${s.areaHammer}` : '')
     + ` dur=${s.durationMs == null ? '-' : `${Math.round(s.durationMs / 1000)}s`}`
     + (s.coins !== undefined ? ` coins=${s.coins}` : '')
     + ` dev=${s.device}`;
@@ -370,7 +374,7 @@ function importTurn(turn) {
 }
 
 // May one more use of `kind` follow `entries`? A game holds at most 6 uses of at most 2 kinds, never more of a kind than its
-// 6-charge ceiling and, when the start set is known (`start`: counts per kind), never a kind or a count the start set lacked.
+// per-kind ceiling and, when the start set is known (`start`: counts per kind), never a kind or a count the start set lacked.
 function toolFits(entries, kind, start = null) {
   const used = entries.filter((entry) => entry.kind === kind).length;
   const kinds = new Set([...entries.map((entry) => entry.kind), kind]);
@@ -394,7 +398,9 @@ function importTools(tools, legacyHammers, start = null) {
     const cells = legacy ? entry.pieceLength : entry.cells;
     const limits = TOOL_LIMITS[kind];
     if (!isCount(cells, limits.cells) || cells === 0 || !isCount(entry.colors, 4) || !isCount(entry.remaining, limits.charges - 1)) return null;
-    if (kind !== 'hammer' && !isCount(entry.target, kind === 'arrow' ? 11 : 7)) return null;
+    if (kind === 'areaHammer') {
+      if (!isCount(entry.target, 86) || entry.target % 8 > 6) return null;
+    } else if (kind !== 'hammer' && !isCount(entry.target, kind === 'arrow' ? 11 : 7)) return null;
     if (typeof entry.refill !== 'boolean' || (entry.over !== null && !isText(entry.over, 24))) return null;
     if (accepted.length && entry.n < accepted.at(-1).n) return null;
     const { pieceLength, ...fieldsWithoutLegacy } = entry;

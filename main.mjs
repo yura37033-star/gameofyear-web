@@ -1,9 +1,9 @@
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=economy-5271c0f1ba';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=economy-5271c0f1ba';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=economy-5271c0f1ba';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=economy-5271c0f1ba';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=economy-5271c0f1ba';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=economy-5271c0f1ba';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=a2-858196272c';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=a2-858196272c';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=a2-858196272c';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=a2-858196272c';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=a2-858196272c';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=a2-858196272c';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -28,6 +28,7 @@ const TOOL_UI = {
   hammer: { name: 'Молоток', short: '🔨', done: 'Молоток застосовано', prompt: 'Торкнись фігури, яку хочеш прибрати.' },
   arrow: { name: 'Стріла', short: 'Стріла', done: 'Стрілу застосовано', prompt: 'Торкнись ряду, який хочеш прибрати.' },
   cannon: { name: 'Пушка', short: 'Пушка', done: 'Пушку застосовано', prompt: 'Торкнись колонки, яку хочеш прибрати.' },
+  areaHammer: { name: 'Молот 2 × 2', short: '2 × 2', done: 'Молот 2 × 2 застосовано', prompt: 'Торкнись верхньої лівої клітинки області 2 × 2.' },
 };
 const TOOL_TAP_DISTANCE = 8;
 let activeTool = null, toolGesture = null, toolPreview = null;
@@ -110,7 +111,7 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const keys = [STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  const keys = [STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
   for (let index = 0; index < keys.length; index += 1) {
     const stored = await storage.load(keys[index]);
     if (stored.reason === 'missing') continue;
@@ -128,9 +129,9 @@ function hasProgress(game) {
 // it does not fit the game (the aria-label then shows only the remaining charges).
 function recoverStartTools(game) {
   const text = journalSafe(() => latestGame(journal)?.st);
-  const match = typeof text === 'string' ? text.match(/^(?:H([1-6]))?(?:A([1-6]))?(?:C([1-6]))?$/) : null;
+  const match = typeof text === 'string' ? text.match(/^(?:H([1-6]))?(?:A([1-6]))?(?:C([1-6]))?(?:Q([1-3]))?$/) : null;
   if (!match || !Array.isArray(game.tools)) return null;
-  const counts = { hammer: Number(match[1] ?? 0), arrow: Number(match[2] ?? 0), cannon: Number(match[3] ?? 0) };
+  const counts = { hammer: Number(match[1] ?? 0), arrow: Number(match[2] ?? 0), cannon: Number(match[3] ?? 0), areaHammer: Number(match[4] ?? 0) };
   const slots = TOOL_KINDS.filter((kind) => counts[kind] > 0).map((kind) => ({ kind, charges: counts[kind] }));
   const fits = slots.length === game.tools.length && slots.every(({ kind, charges }, index) => game.tools[index].kind === kind && game.tools[index].charges <= charges);
   return fits ? slots : null;
@@ -558,16 +559,21 @@ function startGame(taken) {
 }
 // Restores the stored best score, wallet, last game and journal; a damaged or foreign record never blocks a new game.
 async function initGame() {
-  const [bestRead, walletRead, gameRead, journalRead] = await Promise.all([
+  const [bestRead, primaryWalletRead, gameRead, journalRead] = await Promise.all([
     storage.load(STORAGE_KEYS.best), storage.load(WALLET_STORAGE_KEY), readSavedRecord('game'), readSavedRecord('journal'),
   ]);
   if (bestRead.ok) { const parsed = parseBest(bestRead.value); if (parsed.ok) best = parsed.score; }
+  const walletRead = primaryWalletRead.reason === 'missing'
+    ? await storage.load(LEGACY_WALLET_STORAGE_KEY)
+    : primaryWalletRead;
   // No wallet yet (a first launch, or a player of the previous build): the starter set is issued once and stored.
   // A wallet that cannot be read is replaced by a new starter set and the player is told.
   const storedWallet = walletRead.ok ? parseWallet(walletRead.value) : null;
   let notice = '';
-  if (storedWallet?.ok) wallet = storedWallet.wallet;
-  else {
+  if (storedWallet?.ok) {
+    wallet = storedWallet.wallet;
+    if (primaryWalletRead.reason === 'missing' || walletRead.value.v !== wallet.v) persistWallet();
+  } else {
     wallet = createStarterWallet(); persistWallet();
     if (walletRead.ok || walletRead.reason !== 'missing') notice = WALLET_NOTICE;
   }
@@ -698,6 +704,7 @@ function pieceAt(position) {
 function targetAt(position) {
   if (!position) return null;
   if (activeTool === 'hammer') return pieceAt(position)?.id ?? null;
+  if (activeTool === 'areaHammer') return position.y * state.cols + position.x;
   return activeTool === 'arrow' ? position.y : position.x;
 }
 function movedDuringToolTap(event, gesture) {
@@ -750,6 +757,13 @@ function drawToolPreview() {
   ctx.lineWidth = 2;
   if (activeTool === 'arrow') ctx.fillRect(0, target * cell, state.cols * cell, cell);
   if (activeTool === 'cannon') ctx.fillRect(target * cell, 0, cell, state.rows * cell);
+  if (activeTool === 'areaHammer') {
+    const bounds = areaToolBounds(state, target);
+    if (bounds) {
+      ctx.fillRect(bounds.x * cell, bounds.y * cell, bounds.width * cell, bounds.height * cell);
+      ctx.strokeRect(bounds.x * cell + 1, bounds.y * cell + 1, bounds.width * cell - 2, bounds.height * cell - 2);
+    }
+  }
   for (const { x, y } of cells) ctx.strokeRect(x * cell + 3, y * cell + 3, cell - 6, cell - 6);
   ctx.restore();
 }

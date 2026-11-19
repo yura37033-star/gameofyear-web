@@ -11,8 +11,10 @@ export const RULES_V3_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.
 // Economy (rules 4): a game and its journal move to new keys because the published rules-3 build reads the version-3 keys
 // and would reject a rulesVersion 4 record. The page reads v4, then v3, v2, hammer and legacy; older keys are never deleted.
 export const RULES_V4_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.economy.v4', journal: 'kr.journal.economy.v4' });
-// The wallet (coins and tool stock) belongs to the player, not to a game, and is shared by every rules version.
-export const WALLET_STORAGE_KEY = 'kr.wallet.v1';
+// Area hammer (rules 5): preserve the older game and wallet keys for the published economy build.
+export const RULES_V5_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.area.v5', journal: 'kr.journal.area.v5' });
+export const LEGACY_WALLET_STORAGE_KEY = 'kr.wallet.v1';
+export const WALLET_STORAGE_KEY = 'kr.wallet.v2';
 export const STORAGE_LIMITS = Object.freeze({
   'kr.best': 1024,
   'kr.game': 64 * 1024,
@@ -26,6 +28,9 @@ export const STORAGE_LIMITS = Object.freeze({
   'kr.game.economy.v4': 64 * 1024,
   'kr.journal.economy.v4': 600 * 1024,
   'kr.wallet.v1': 1024,
+  'kr.wallet.v2': 1024,
+  'kr.game.area.v5': 64 * 1024,
+  'kr.journal.area.v5': 600 * 1024,
 });
 const PROBE_KEY = 'kr.probe';
 const DEFAULT_LIMIT = 64 * 1024;

@@ -1,14 +1,14 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=economy-5271c0f1ba';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=a2-858196272c';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
 // Tool slots of one game (DEMO_PLAN.md section 24): up to two different kinds in the fixed order below, at most
-// MAX_TOOL_CARRY charges in total. TOOL_CHARGES is the per-game ceiling of every kind (the wallet stock limits live in
-// economy.mjs and are never lower than what a single game can carry, except that a game never carries more than 6).
-export const TOOL_ORDER = Object.freeze(['hammer', 'arrow', 'cannon']);
+// MAX_TOOL_CARRY charges in total. TOOL_CHARGES is the per-game ceiling for each kind (the wallet stock limits live in economy.mjs).
+// The area hammer has its own ceiling of three; all tools still share the six-charge total.
+export const TOOL_ORDER = Object.freeze(['hammer', 'arrow', 'cannon', 'areaHammer']);
 export const MAX_TOOL_CARRY = 6;
 export const MAX_TOOL_KINDS = 2;
-export const TOOL_CHARGES = Object.freeze({ hammer: MAX_TOOL_CARRY, arrow: MAX_TOOL_CARRY, cannon: MAX_TOOL_CARRY });
+export const TOOL_CHARGES = Object.freeze({ hammer: MAX_TOOL_CARRY, arrow: MAX_TOOL_CARRY, cannon: MAX_TOOL_CARRY, areaHammer: 3 });
 export const TOOL_CELL_POINTS = 10;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
@@ -970,7 +970,7 @@ export function makeToolSlots(lineTool = 'arrow', hammerCharges = HAMMER_CHARGES
 
 // Pure check of the tool slots of one game: { ok: true, tools } with fresh copies, or { ok: false, reason }.
 // Reasons: tools (not an array, or more than two slots), tool-shape (a slot is not exactly { kind, charges }),
-// tool-kind (unknown kind), tool-duplicate (a kind twice), tool-order (not hammer, arrow, cannon), tool-charges
+// tool-kind (unknown kind), tool-duplicate (a kind twice), tool-order (not in TOOL_ORDER), tool-charges
 // (not an integer 0..TOOL_CHARGES[kind]), tool-total (more than MAX_TOOL_CARRY charges together).
 export function validateToolSlots(tools) {
   if (!Array.isArray(tools) || tools.length > MAX_TOOL_KINDS) return { ok: false, reason: 'tools' };
@@ -1259,8 +1259,22 @@ export function rotatePiece(state, pieceId, direction = 'clockwise') {
   return finalizeMove(state, pieceId, preview, { type: 'rotate', pieceId, direction });
 }
 
+export function areaToolBounds(state, target) {
+  if (!state || !Number.isInteger(state.cols) || !Number.isInteger(state.rows) || state.cols < 2 || state.rows < 2
+    || !Number.isInteger(target) || target < 0 || target >= state.cols * state.rows) return null;
+  const tappedX = target % state.cols;
+  const tappedY = Math.floor(target / state.cols);
+  return { x: Math.min(tappedX, state.cols - 2), y: Math.min(tappedY, state.rows - 2), width: 2, height: 2 };
+}
+
 export function toolTargetCells(state, kind, target) {
   if (kind === 'hammer') return findPiece(state, target)?.cells.map(cloneCell) ?? [];
+  if (kind === 'areaHammer') {
+    const bounds = areaToolBounds(state, target);
+    if (!bounds || !Array.isArray(state.pieces)) return [];
+    const { x, y, width, height } = bounds;
+    return state.pieces.flatMap((piece) => piece.cells.filter((cell) => cell.x >= x && cell.x < x + width && cell.y >= y && cell.y < y + height)).map(cloneCell);
+  }
   if (kind !== 'arrow' && kind !== 'cannon') return [];
   const axis = kind === 'arrow' ? 'y' : 'x';
   const size = kind === 'arrow' ? state.rows : state.cols;
@@ -1291,7 +1305,12 @@ export function useTool(state, kind, target) {
   const coordinates = new Set(cells.map(({ x, y }) => `${x},${y}`));
   const pieces = removeCells(state.pieces, ({ x, y }) => coordinates.has(`${x},${y}`), idFactory.next);
   const gain = cells.length * TOOL_CELL_POINTS;
-  const action = kind === 'hammer' ? { type: 'hammer', pieceId: target } : { type: 'tool', kind, target };
+  let actionTarget = target;
+  if (kind === 'areaHammer') {
+    const bounds = areaToolBounds(state, target);
+    actionTarget = bounds.y * state.cols + bounds.x;
+  }
+  const action = kind === 'hammer' ? { type: 'hammer', pieceId: target } : { type: 'tool', kind, target: actionTarget };
   addSnapshotEvent(events, { ...action, cells, gain }, pieces);
   const physics = resolvePhysics(pieces, state, events, idFactory.next);
   const nextState = {

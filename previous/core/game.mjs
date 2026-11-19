@@ -1,8 +1,14 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=a1-de0f23cea3';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=economy-5271c0f1ba';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
-export const HAMMER_CHARGES = 3;
-export const TOOL_CHARGES = Object.freeze({ hammer: HAMMER_CHARGES, arrow: 1, cannon: 1 });
+export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
+// Tool slots of one game (DEMO_PLAN.md section 24): up to two different kinds in the fixed order below, at most
+// MAX_TOOL_CARRY charges in total. TOOL_CHARGES is the per-game ceiling of every kind (the wallet stock limits live in
+// economy.mjs and are never lower than what a single game can carry, except that a game never carries more than 6).
+export const TOOL_ORDER = Object.freeze(['hammer', 'arrow', 'cannon']);
+export const MAX_TOOL_CARRY = 6;
+export const MAX_TOOL_KINDS = 2;
+export const TOOL_CHARGES = Object.freeze({ hammer: MAX_TOOL_CARRY, arrow: MAX_TOOL_CARRY, cannon: MAX_TOOL_CARRY });
 export const TOOL_CELL_POINTS = 10;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
@@ -956,17 +962,49 @@ function selectTrialPreview(state, random) {
   return finish(fallbackRow, 'regular', false, null, fallbackRng);
 }
 
+// The fixed A1 set: a hammer with `hammerCharges` charges and one charge of a line tool.
 export function makeToolSlots(lineTool = 'arrow', hammerCharges = HAMMER_CHARGES) {
   if (lineTool !== 'arrow' && lineTool !== 'cannon') throw new RangeError('Unknown line tool');
-  return [{ kind: 'hammer', charges: hammerCharges }, { kind: lineTool, charges: TOOL_CHARGES[lineTool] }];
+  return [{ kind: 'hammer', charges: hammerCharges }, { kind: lineTool, charges: 1 }];
 }
 
-export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE, trial = false, lineTool = 'arrow' } = {}) {
+// Pure check of the tool slots of one game: { ok: true, tools } with fresh copies, or { ok: false, reason }.
+// Reasons: tools (not an array, or more than two slots), tool-shape (a slot is not exactly { kind, charges }),
+// tool-kind (unknown kind), tool-duplicate (a kind twice), tool-order (not hammer, arrow, cannon), tool-charges
+// (not an integer 0..TOOL_CHARGES[kind]), tool-total (more than MAX_TOOL_CARRY charges together).
+export function validateToolSlots(tools) {
+  if (!Array.isArray(tools) || tools.length > MAX_TOOL_KINDS) return { ok: false, reason: 'tools' };
+  const slots = [];
+  let total = 0;
+  for (const slot of tools) {
+    const keys = slot !== null && typeof slot === 'object' && !Array.isArray(slot) ? Object.keys(slot) : null;
+    if (!keys || keys.length !== 2 || !keys.includes('kind') || !keys.includes('charges')) return { ok: false, reason: 'tool-shape' };
+    const { kind, charges } = slot;
+    if (typeof kind !== 'string' || !TOOL_ORDER.includes(kind)) return { ok: false, reason: 'tool-kind' };
+    if (slots.some((item) => item.kind === kind)) return { ok: false, reason: 'tool-duplicate' };
+    if (slots.length && TOOL_ORDER.indexOf(kind) < TOOL_ORDER.indexOf(slots.at(-1).kind)) return { ok: false, reason: 'tool-order' };
+    if (!Number.isSafeInteger(charges) || charges < 0 || charges > TOOL_CHARGES[kind]) return { ok: false, reason: 'tool-charges' };
+    total += charges;
+    slots.push({ kind, charges });
+  }
+  if (total > MAX_TOOL_CARRY) return { ok: false, reason: 'tool-total' };
+  return { ok: true, tools: slots };
+}
+
+// `tools` (trial only) is the loadout of the game: zero to two slots, see validateToolSlots. Without it the fixed A1 set
+// (hammer 3, arrow 1) is used, so existing callers and tests keep their games.
+export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE, trial = false, tools } = {}) {
   if (!Number.isInteger(cols) || cols < 4 || !Number.isInteger(rows) || rows < 4) {
     throw new RangeError('cols and rows must be integers of at least 4');
   }
   if (!Array.isArray(palette) || palette.length < 2 || palette.some((color) => typeof color !== 'string')) {
     throw new TypeError('palette must contain at least two color strings');
+  }
+  let startTools = null;
+  if (trial === true) {
+    const checked = tools === undefined ? { ok: true, tools: makeToolSlots('arrow') } : validateToolSlots(tools);
+    if (!checked.ok) throw new RangeError(`Invalid tools: ${checked.reason}`);
+    startTools = checked.tools;
   }
 
   const normalizedSeed = seed >>> 0;
@@ -998,7 +1036,7 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
     turn: 0,
     status: 'playing',
     trial: trialEnabled,
-    ...(trialEnabled ? { tools: makeToolSlots(lineTool) } : {}),
+    ...(trialEnabled ? { tools: startTools } : {}),
     skipNextRise: false,
     skipRiseUsed: false,
     nextRowKind: 'regular',
@@ -1242,6 +1280,8 @@ export function useTool(state, kind, target) {
   if (!Number.isInteger(slot.charges) || slot.charges < 0 || slot.charges > TOOL_CHARGES[kind]) {
     return failedMutation(state, kind === 'hammer' ? 'invalid-hammers' : 'invalid-charges');
   }
+  const carried = state.tools.reduce((sum, item) => sum + (Number.isSafeInteger(item?.charges) ? item.charges : 0), 0);
+  if (carried > MAX_TOOL_CARRY) return failedMutation(state, kind === 'hammer' ? 'invalid-hammers' : 'invalid-charges');
   if (slot.charges === 0) return failedMutation(state, kind === 'hammer' ? 'no-hammers' : 'no-charges');
   const cells = toolTargetCells(state, kind, target);
   if (!cells.length) return failedMutation(state, kind === 'hammer' ? 'piece-not-found' : 'empty-target');

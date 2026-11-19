@@ -3,10 +3,16 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'a1-de0f23cea3';
+export const BUILD_ID = 'economy-5271c0f1ba';
 // Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
 const RAINBOW_COLOR = 'rainbow';
-const TOOL_LIMITS = { hammer: { cells: 4, charges: 3 }, arrow: { cells: 8, charges: 1 }, cannon: { cells: 12, charges: 1 } };
+// A game carries at most 6 charges of at most 2 kinds (DEMO_PLAN.md section 24), so a kind is used at most 6 times; the
+// journal stays free of imports, so these numbers repeat MAX_TOOL_CARRY / MAX_TOOL_KINDS of core/game.mjs (a test keeps them equal).
+const TOOL_LIMITS = { hammer: { cells: 4, charges: 6 }, arrow: { cells: 8, charges: 6 }, cannon: { cells: 12, charges: 6 } };
+const TOOL_ORDER = ['hammer', 'arrow', 'cannon'];
+const TOOL_LETTER = { hammer: 'H', arrow: 'A', cannon: 'C' };
+const MAX_GAME_CHARGES = 6;
+const MAX_GAME_KINDS = 2;
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones
 
 export function createJournal() {
@@ -49,7 +55,38 @@ function colorCount(state) {
 
 const hasRainbowRow = (state) => Array.isArray(state?.nextRow) && state.nextRow.some((segment) => segment?.color === RAINBOW_COLOR);
 
-export function startGameLog(journal, { seed, mode, startedAt, startedLabel, device, build = BUILD_ID } = {}) {
+// The starting set of a game as a short text: kinds in the fixed order, a letter and the charge count each ('H3A2'), '' for
+// no tools. null when the slots are not a valid set (then the game simply records no start set).
+export function encodeStartSet(tools) {
+  if (!Array.isArray(tools)) return null;
+  let text = '';
+  let total = 0;
+  let last = -1;
+  for (const slot of tools) {
+    const index = TOOL_ORDER.indexOf(slot?.kind);
+    if (index <= last || !isCount(slot.charges, MAX_GAME_CHARGES)) return null;
+    last = index;
+    total += slot.charges;
+    if (slot.charges > 0) text += `${TOOL_LETTER[slot.kind]}${slot.charges}`;
+  }
+  return total <= MAX_GAME_CHARGES && tools.length <= MAX_GAME_KINDS ? text : null;
+}
+
+// Back from the short text to { hammer, arrow, cannon } counts, or null when the text is not a start set.
+function decodeStartSet(text) {
+  if (typeof text !== 'string' || !/^(?:H[1-6])?(?:A[1-6])?(?:C[1-6])?$/.test(text)) return null;
+  const counts = {};
+  let total = 0;
+  for (const [, letter, count] of text.matchAll(/([HAC])([1-6])/g)) {
+    counts[TOOL_ORDER.find((kind) => TOOL_LETTER[kind] === letter)] = Number(count);
+    total += Number(count);
+  }
+  return Object.keys(counts).length <= MAX_GAME_KINDS && total <= MAX_GAME_CHARGES ? counts : null;
+}
+
+// `tools` is the loadout the game starts with ({ kind, charges } slots, zero to two, as given to createGame); it is stored as
+// the short text `st`. Without it (restored games) the start set stays unknown.
+export function startGameLog(journal, { seed, mode, startedAt, startedLabel, device, build = BUILD_ID, tools } = {}) {
   const previous = latestGame(journal);
   if (previous && !previous.end && previous.turns.length === 0 && !previous.tools?.length) journal.games.pop(); // an untouched game is not worth a journal slot
   else if (previous && !previous.end) previous.end = { reason: 'abandoned', endedAt: startedAt ?? null, score: null };
@@ -58,6 +95,8 @@ export function startGameLog(journal, { seed, mode, startedAt, startedLabel, dev
     startedLabel: startedLabel == null ? null : String(startedLabel), device: String(device ?? 'unknown'),
     turns: [], end: null,
   };
+  const startSet = tools === undefined ? null : encodeStartSet(tools);
+  if (startSet !== null) game.st = startSet;
   journal.games.push(game);
   while (journal.games.length > journal.capacity) journal.games.shift();
   return game;
@@ -117,7 +156,8 @@ export function recordTool(journal, { before, after, result } = {}) {
   const cells = strike.cells.length;
   const remaining = after.tools?.find((slot) => slot.kind === kind)?.charges;
   if (!isCount(remaining, TOOL_LIMITS[kind].charges - 1) || cells < 1 || cells > TOOL_LIMITS[kind].cells) return null;
-  if (!toolFits(game.tools ?? [], kind)) return null;
+  if (before.tools?.find((slot) => slot.kind === kind)?.charges !== remaining + 1) return null; // exactly one charge was spent
+  if (!toolFits(game.tools ?? [], kind, decodeStartSet(game.st))) return null;
 
   let rows = 0;
   for (const event of events) if (event.type === 'clear' && Array.isArray(event.rows)) rows += event.rows.length;
@@ -148,12 +188,14 @@ function latestAction(turns, tools) {
   return tool && (!turn || tool.n >= turn.n) ? tool : turn;
 }
 
-export function finishGameLog(journal, finalState, { endedAt = null } = {}) {
+// `coins` (optional) is what the wallet received for this game; it is printed as coins=N and absent when unknown.
+export function finishGameLog(journal, finalState, { endedAt = null, coins } = {}) {
   const game = latestGame(journal);
   if (!game || game.end) return null;
   const last = latestAction(game.turns, game.tools ?? []);
   const reason = last?.over ?? (finalState?.status === 'gameover' ? 'top-row' : 'abandoned');
   game.end = { reason, endedAt, score: finalState?.score ?? last?.score ?? 0 };
+  if (isCount(coins)) game.end.coins = coins;
   return game;
 }
 
@@ -183,6 +225,8 @@ export function summarizeGame(game) {
     pauseTurn: first((turn) => turn.pause),
     durationMs,
   };
+  if (game.st !== undefined) summary.startSet = game.st;
+  if (game.end?.coins !== undefined) summary.coins = game.end.coins;
   const hammers = tools.filter((tool) => tool.kind === 'hammer');
   if (hammers.length) {
     summary.hammers = hammers.length;
@@ -195,10 +239,9 @@ export function summarizeGame(game) {
   return summary;
 }
 
-export const LEGEND = 'L n move sec +gain rN h<before>><after> events next cN HN[f] | '
-  + 'move: M<cells incl. start>/<pieceLen> or Rcw|Rccw; sec: think time; rN: rows cleared; h: stack; '
-  + 'events (+ joined): U rise, Da/Dr double after/instead of rise, P pause, X game over; '
-  + 'next: reg|res row, +1|2 verified path, ~ rainbow strip; cN: colours; HN: hints pressed, f: hint step followed';
+// Columns of a turn line, explained once and kept short: the whole report must stay under 3 KB for 60 turns.
+export const LEGEND = 'L n, M<cells>/<len> move|Rcw|Rccw, sec think, +gain, rN rows cleared, h<from>><to> stack, '
+  + 'U rise, Da/Dr double after/instead of rise, P pause, X over, next reg|res +1|2 verified path ~ rainbow strip, cN colours, HN hints f followed';
 
 function seconds(ms) {
   return (Math.min(ms, 999900) / 1000).toFixed(1);
@@ -230,11 +273,18 @@ function formatTool(tool) {
   return `${target} x${tool.cells} +${tool.gain} r${tool.rows} h${tool.hBefore}>${tool.hAfter}${tool.refill ? ' F' : ''}${tool.over ? ' X' : ''} left=${tool.remaining}`;
 }
 
+// The tool part of the legend is printed only for what the games contain; the shared tail of a tool line is explained once.
 function reportLegend(games) {
   const tools = games.flatMap((game) => game.tools ?? []);
-  return LEGEND
-    + (tools.some((tool) => tool.kind === 'hammer') ? ' | hammer: B<n> x<size> +gain rN h<before>><after> F refill, X game over, left=remaining' : '')
-    + (tools.some((tool) => tool.kind !== 'hammer') ? ' | line tools: A<n> r<row> or C<n> c<column>, x<cells> +gain rN h<before>><after> F refill, X game over, left=remaining' : '');
+  const parts = [];
+  if (tools.some((tool) => tool.kind === 'hammer')) parts.push('hammer B<n> x<cells>');
+  if (tools.some((tool) => tool.kind !== 'hammer')) parts.push('A<n> r<row>, C<n> c<col> x<cells>');
+  let legend = LEGEND;
+  if (parts.length) legend += ` | ${parts.join('; ')}; then +gain rN h<from>><to> F refill X over left=charges`;
+  const notes = [];
+  if (games.some((game) => game.st !== undefined)) notes.push('st start set');
+  if (games.some((game) => game.end?.coins !== undefined)) notes.push('coins paid');
+  return notes.length ? `${legend} | ${notes.join(', ')}` : legend;
 }
 
 function reportActions(game) {
@@ -263,10 +313,13 @@ export function formatHeader(game) {
     + ` | turns=${s.turns} score=${s.score} rows=${s.rows} end=${s.reason} hmax=${s.maxStack}`
     + ` clear1=${orDash(s.firstClear)} col2=${orDash(s.secondColor)} rot=${s.rotations} hint=${s.hints}`
     + ` resc=${s.rescueRows} dbl=${s.doublings} pause=${orDash(s.pauseTurn)}`
+    + (s.startSet !== undefined ? ` st=${s.startSet || '-'}` : '')
     + (s.hammers ? ` hammer=${s.hammers} hrows=${s.hammerRows}` : '')
     + (s.arrow ? ` arrow=${s.arrow}` : '')
     + (s.cannon ? ` cannon=${s.cannon}` : '')
-    + ` dur=${s.durationMs == null ? '-' : `${Math.round(s.durationMs / 1000)}s`} dev=${s.device}`;
+    + ` dur=${s.durationMs == null ? '-' : `${Math.round(s.durationMs / 1000)}s`}`
+    + (s.coins !== undefined ? ` coins=${s.coins}` : '')
+    + ` dev=${s.device}`;
 }
 
 export function formatReport(game, { legend = true } = {}) {
@@ -316,21 +369,25 @@ function importTurn(turn) {
   return copy;
 }
 
-function toolFits(entries, kind) {
-  if (kind !== 'hammer') return entries.every((entry) => entry.kind === 'hammer');
-  return entries.filter((entry) => entry.kind === 'hammer').length < TOOL_LIMITS.hammer.charges;
+// May one more use of `kind` follow `entries`? A game holds at most 6 uses of at most 2 kinds, never more of a kind than its
+// 6-charge ceiling and, when the start set is known (`start`: counts per kind), never a kind or a count the start set lacked.
+function toolFits(entries, kind, start = null) {
+  const used = entries.filter((entry) => entry.kind === kind).length;
+  const kinds = new Set([...entries.map((entry) => entry.kind), kind]);
+  if (entries.length >= MAX_GAME_CHARGES || kinds.size > MAX_GAME_KINDS || used >= TOOL_LIMITS[kind].charges) return false;
+  return start === null || used < (start[kind] ?? 0);
 }
 
-function importTools(tools, legacyHammers) {
+function importTools(tools, legacyHammers, start = null) {
   const legacy = legacyHammers !== undefined;
   if (legacy && tools !== undefined) return null;
   const source = legacy ? legacyHammers : tools;
-  if (!Array.isArray(source) || source.length > (legacy ? 3 : 4)) return null;
+  if (!Array.isArray(source) || source.length > (legacy ? 3 : MAX_GAME_CHARGES)) return null;
   const baseKeys = ['n', 'score', 'gain', 'rows', 'hBefore', 'hAfter', 'refill', 'colors', 'remaining', 'over'];
   const accepted = [];
   for (const entry of source) {
     const kind = legacy ? 'hammer' : entry?.kind;
-    if (!Object.hasOwn(TOOL_LIMITS, kind) || !toolFits(accepted, kind)) return null;
+    if (!Object.hasOwn(TOOL_LIMITS, kind) || !toolFits(accepted, kind, start)) return null;
     const fields = legacy ? ['pieceLength'] : kind === 'hammer' ? ['kind', 'cells'] : ['kind', 'cells', 'target'];
     if (!onlyKeys(entry, [...baseKeys, ...fields])) return null;
     if (!['n', 'score', 'gain', 'rows', 'hBefore', 'hAfter'].every((key) => isCount(entry[key]))) return null;
@@ -347,7 +404,7 @@ function importTools(tools, legacyHammers) {
 }
 
 function importGame(game) {
-  const { hammers, tools, ...baseGame } = game ?? {};
+  const { hammers, tools, st, ...baseGame } = game ?? {};
   if (!onlyKeys(baseGame, ['build', 'seed', 'mode', 'startedAt', 'startedLabel', 'device', 'turns', 'end'])) return null;
   if (!isText(game.build, 40) || !isText(game.mode, 40) || !isText(game.device, 80)) return null;
   if (!Number.isSafeInteger(game.seed) || game.seed < 0 || game.seed > 0xFFFFFFFF) return null;
@@ -360,19 +417,26 @@ function importGame(game) {
     if (!imported) return null;
     turns.push(imported);
   }
-  const importedTools = tools !== undefined || hammers !== undefined ? importTools(tools, hammers) : undefined;
+  // `st` (start set, e.g. 'H3A2') is optional: journals saved before the economy have none.
+  const start = st === undefined ? null : decodeStartSet(st);
+  if (st !== undefined && start === null) return null;
+  const importedTools = tools !== undefined || hammers !== undefined ? importTools(tools, hammers, start) : undefined;
   if (importedTools === null) return null;
   let end = null;
   if (game.end !== null) {
-    if (!onlyKeys(game.end, ['reason', 'endedAt', 'score']) || !isText(game.end.reason, 24)) return null;
+    const { coins, ...endKeys } = game.end ?? {};
+    if (coins !== undefined && !isCount(coins)) return null; // optional: absent before the economy and for games closed without a payout
+    if (!onlyKeys(endKeys, ['reason', 'endedAt', 'score']) || !isText(game.end.reason, 24)) return null;
     if (game.end.endedAt !== null && !(Number.isSafeInteger(game.end.endedAt) && game.end.endedAt >= 0)) return null;
     if (game.end.score !== null && !isCount(game.end.score)) return null;
     end = { reason: game.end.reason, endedAt: game.end.endedAt, score: game.end.score };
+    if (coins !== undefined) end.coins = coins;
   }
   const imported = {
     build: game.build, seed: game.seed, mode: game.mode, startedAt: game.startedAt, startedLabel: game.startedLabel,
     device: game.device, turns, end,
   };
+  if (st !== undefined) imported.st = st;
   if (importedTools !== undefined) imported.tools = importedTools;
   return imported;
 }

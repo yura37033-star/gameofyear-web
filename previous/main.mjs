@@ -1,8 +1,9 @@
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, TOOL_CHARGES, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=a1-de0f23cea3';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=a1-de0f23cea3';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=a1-de0f23cea3';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=a1-de0f23cea3';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, createStorage } from './storage.mjs?v=a1-de0f23cea3';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=economy-5271c0f1ba';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=economy-5271c0f1ba';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=economy-5271c0f1ba';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=economy-5271c0f1ba';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=economy-5271c0f1ba';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=economy-5271c0f1ba';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -19,15 +20,14 @@ let previewTween = null, previewFrame = 0;
 let hintDirection = 'clockwise';
 let suggestion = null, suggestionFrame = 0, hintVisible = true;
 const hintButton = $('hintButton');
-const toolButtons = [$('hammerButton'), $('lineToolButton')];
-const toolCounts = [$('hammerCount'), $('lineToolCount')];
-const lineToolName = $('lineToolName');
+let toolButtons = []; // one button per slot of state.tools (zero to two), built by buildToolButtons
 const toolbar = $('toolbar'), toolActions = $('toolActions'), applyTool = $('applyTool');
-const confirmBox = $('confirmNew');
+const confirmBox = $('confirmNew'), loadoutBox = $('loadoutDialog');
+const modalOpen = () => confirmBox.open || loadoutBox.open;
 const TOOL_UI = {
-  hammer: { name: 'Молоток', prompt: 'Торкнись фігури, яку хочеш прибрати.' },
-  arrow: { name: 'Стріла', prompt: 'Торкнись ряду, який хочеш прибрати.' },
-  cannon: { name: 'Пушка', prompt: 'Торкнись колонки, яку хочеш прибрати.' },
+  hammer: { name: 'Молоток', short: '🔨', done: 'Молоток застосовано', prompt: 'Торкнись фігури, яку хочеш прибрати.' },
+  arrow: { name: 'Стріла', short: 'Стріла', done: 'Стрілу застосовано', prompt: 'Торкнись ряду, який хочеш прибрати.' },
+  cannon: { name: 'Пушка', short: 'Пушка', done: 'Пушку застосовано', prompt: 'Торкнись колонки, яку хочеш прибрати.' },
 };
 const TOOL_TAP_DISTANCE = 8;
 let activeTool = null, toolGesture = null, toolPreview = null;
@@ -62,17 +62,28 @@ function journalRecord(before, result) {
     journalHints = 0;
   }
   journalLastHint = null;
-  if (result.state.status === 'gameover') finishGameLog(journal, result.state, { endedAt: Date.now() });
 }
 
 // --- Persistence (P1, PERSISTENCE_PLAN.md): the best score, the last game and the journal live in localStorage.
 // Two tabs share one store: the last write wins (no cross-tab merging). Every call is wrapped so storage can never break the game.
 const STORAGE_NOTICE = 'Прогрес цього запуску не збережеться.';
 let best = 0, bestAtStart = 0, recordBase = 0, storageNoticePending = false, storageNoticeShown = false;
+// Economy (package B): the wallet is the player's, not the game's. `paidCoins` is null until the current game has been paid
+// out (a loss or a replacement) and then holds the coins it paid; it is stored in the game record as coinsPaid so a reload can never pay twice.
+let wallet = createStarterWallet(), paidCoins = null, startTools = null;
+// The last loadout of this page session ({ kind: count }, empty when no tools were taken); null until a game was started: the first offer is then the default one.
+let lastPicks = null;
+let walletWriteFailed = false; // the write that stored the current game's payout did not reach storage
+const WALLET_NOTICE = 'Гаманець не вдалося прочитати, видано стартовий набір.';
 const storage = createStorage({ onUnavailable: () => { if (!storageNoticeShown) { storageNoticeShown = true; storageNoticePending = true; } } });
 function persistSafe(action) { try { return action(); } catch { return null; } }
 function persistGame() {
-  if (state) persistSafe(() => storage.save(STORAGE_KEYS.game, serializeGame(state, { bestAtStart, savedAt: Date.now() })));
+  if (state) persistSafe(() => storage.save(STORAGE_KEYS.game, serializeGame(state, { bestAtStart, savedAt: Date.now(), coinsPaid: paidCoins ?? undefined })));
+}
+// Resolves to true only when the wallet reached the browser store ({ ok: true, persisted: true }); never rejects.
+function persistWallet() {
+  const write = persistSafe(() => storage.save(WALLET_STORAGE_KEY, serializeWallet(wallet)));
+  return Promise.resolve(write).then((result) => Boolean(result?.ok && result.persisted), () => false);
 }
 function persistBest() {
   if (!state || nextBest(best, state.score) === best) return;
@@ -99,7 +110,7 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const keys = [STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  const keys = [STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
   for (let index = 0; index < keys.length; index += 1) {
     const stored = await storage.load(keys[index]);
     if (stored.reason === 'missing') continue;
@@ -108,8 +119,57 @@ async function readSavedRecord(slot) {
   }
   return { ok: false, reason: 'missing' };
 }
+// A game has progress after its first turn or its first tool use. Every tool use scores 10 points per destroyed cell and
+// a target is never empty, so a score above zero also covers a restored game whose starting set is unknown.
 function hasProgress(game) {
-  return game.turn > 0 || Boolean(game.tools?.some(({ kind, charges }) => charges < TOOL_CHARGES[kind]));
+  return game.turn > 0 || game.score > 0;
+}
+// The starting set of the restored game, read from the journal's short text ('H3A1'); null when the journal does not hold it or
+// it does not fit the game (the aria-label then shows only the remaining charges).
+function recoverStartTools(game) {
+  const text = journalSafe(() => latestGame(journal)?.st);
+  const match = typeof text === 'string' ? text.match(/^(?:H([1-6]))?(?:A([1-6]))?(?:C([1-6]))?$/) : null;
+  if (!match || !Array.isArray(game.tools)) return null;
+  const counts = { hammer: Number(match[1] ?? 0), arrow: Number(match[2] ?? 0), cannon: Number(match[3] ?? 0) };
+  const slots = TOOL_KINDS.filter((kind) => counts[kind] > 0).map((kind) => ({ kind, charges: counts[kind] }));
+  const fits = slots.length === game.tools.length && slots.every(({ kind, charges }, index) => game.tools[index].kind === kind && game.tools[index].charges <= charges);
+  return fits ? slots : null;
+}
+function updateCoins() {
+  $('coins').textContent = wallet.coins.toLocaleString('uk-UA');
+  fitHud();
+}
+// The header row (score and record, moves, coins, field badge) never scrolls sideways: when the numbers grow it steps down through
+// four type scales (data-fit 0..3, set in CSS) until the row fits. It measures only when one of the texts or the width changed.
+const hud = document.querySelector('.hud');
+let hudSignature = '';
+function fitHud(force = false) {
+  const signature = [$('score').textContent, $('turn').textContent, $('coins').textContent, $('best').textContent, hud.clientWidth].join('|');
+  if (!force && signature === hudSignature) return;
+  hudSignature = signature;
+  for (let level = 0; level <= 3; level += 1) {
+    hud.dataset.fit = String(level);
+    if (hud.scrollWidth <= hud.clientWidth) break;
+  }
+}
+// Pays the current game once: the game record (with coinsPaid) is queued BEFORE the wallet, so a break between the two writes
+// loses the payout instead of paying twice. Unused charges go back to the stock inside settleGame.
+// `finishJournal` is false for the replacement of a game without progress, which the journal drops on its own.
+function settleCurrentGame({ finishJournal = true, endedAt = Date.now() } = {}) {
+  if (!state?.trial || paidCoins !== null) return null;
+  let settled;
+  try { settled = settleGame(wallet, state.tools, state.score); } catch { return null; }
+  paidCoins = settled.coins; wallet = settled.wallet;
+  persistGame(); // record first, wallet second
+  walletWriteFailed = false;
+  const paidState = state;
+  persistWallet().then((stored) => {
+    if (stored || state !== paidState || paidCoins === null) return;
+    walletWriteFailed = true; render(); // the loss screen must not present the sum as confirmed
+  });
+  if (finishJournal) { journalSafe(() => finishGameLog(journal, state, { endedAt, coins: paidCoins })); persistJournal(); }
+  updateCoins();
+  return settled;
 }
 
 function seed() {
@@ -319,17 +379,19 @@ function showNextRow() {
 function render() {
   if (!state) return;
   const showRotation = !busy && !drag && !activeTool && state.status === 'playing';
-  const toolBlocked = busy || Boolean(drag || toolGesture) || confirmBox.open || state.status !== 'playing';
+  const toolBlocked = busy || Boolean(drag || toolGesture) || modalOpen() || state.status !== 'playing';
   for (const [index, button] of toolButtons.entries()) {
     const slot = state.tools?.[index];
+    button.hidden = state.status === 'gameover'; // charges of a lost game are back in the stock: nothing to offer
     button.disabled = toolBlocked || !slot?.charges;
     button.setAttribute('aria-pressed', String(Boolean(slot && slot.kind === activeTool)));
     if (!slot) continue;
-    const name = TOOL_UI[slot.kind].name;
-    if (index === 1 && lineToolName.textContent !== name) lineToolName.textContent = name;
-    if (toolCounts[index].textContent !== String(slot.charges)) toolCounts[index].textContent = slot.charges;
-    button.setAttribute('aria-label', `${name}. Заряди ${slot.charges} з ${TOOL_CHARGES[slot.kind]}`);
+    const count = button.lastElementChild;
+    if (count.textContent !== String(slot.charges)) count.textContent = slot.charges;
+    const start = startTools?.find((item) => item.kind === slot.kind)?.charges;
+    button.setAttribute('aria-label', `${TOOL_UI[slot.kind].name}. Заряди ${slot.charges}${start === undefined ? '' : ` з ${start}`}`);
   }
+  $('coins').textContent = wallet.coins.toLocaleString('uk-UA');
   toolbar.hidden = Boolean(toolPreview);
   toolActions.hidden = !toolPreview;
   applyTool.disabled = toolBlocked || !toolPreview;
@@ -340,7 +402,7 @@ function render() {
   }
   if (!busy) hintVisible = state.trial === true && state.status === 'playing';
   hintButton.classList.toggle('is-off', !hintVisible);
-  hintButton.disabled = busy || Boolean(drag || toolGesture) || confirmBox.open || !hintVisible;
+  hintButton.disabled = busy || Boolean(drag || toolGesture) || modalOpen() || !hintVisible;
   for (const [direction, button] of Object.entries(rotationButtons)) {
     button.classList.toggle('hint-target', Boolean(suggestion) && !busy && suggestion.kind === 'rotate' && suggestion.direction === direction);
   }
@@ -382,9 +444,16 @@ function render() {
   if (!previewTween) drawNextRowCanvas();
   $('score').textContent = displayedScore.toLocaleString('uk-UA'); $('turn').textContent = state.turn;
   $('best').textContent = `Рекорд ${Math.max(recordBase, displayedScore).toLocaleString('uk-UA')}`;
+  fitHud();
   $('newRecord').hidden = !(state.status === 'gameover' && isNewRecord(state.score, bestAtStart));
   $('gameOver').hidden = state.status !== 'gameover' || busy;
   $('finalScore').textContent = state.score.toLocaleString('uk-UA');
+  const returned = (state.tools ?? []).filter((slot) => slot.charges > 0).map((slot) => `${TOOL_UI[slot.kind].name} ×${slot.charges}`);
+  $('coinsEarned').textContent = state.status === 'gameover' && paidCoins !== null
+    ? `+${paidCoins} монет${walletWriteFailed ? '' : `, у гаманці ${wallet.coins.toLocaleString('uk-UA')}`}` : '';
+  $('walletWarning').hidden = !(state.status === 'gameover' && paidCoins !== null && walletWriteFailed);
+  $('returnedTools').textContent = state.status === 'gameover' && paidCoins !== null && returned.length ? `Повернуто в запас: ${returned.join(', ')}` : '';
+  $('returnedTools').hidden = !$('returnedTools').textContent;
   const boardPrompt = toolPreview ? 'Ціль обрано. Застосуй інструмент або скасуй.'
     : activeTool ? TOOL_UI[activeTool].prompt : selectedId ? 'Фігуру обрано.' : 'Обери фігуру.';
   board.setAttribute('aria-label', `Поле ${state.cols} на ${state.rows}. Очки: ${displayedScore}. Ходів: ${state.turn}. ${boardPrompt}`);
@@ -399,7 +468,7 @@ function suggestionTick() {
   if (!reducedMotion.matches && !document.hidden) suggestionFrame = requestAnimationFrame(suggestionTick);
 }
 function requestHint() {
-  if (!state || busy || drag || toolGesture || confirmBox.open || state.status !== 'playing' || !hintVisible) return;
+  if (!state || busy || drag || toolGesture || modalOpen() || state.status !== 'playing' || !hintVisible) return;
   disarmTool();
   const found = suggestAction(state);
   journalHints++; journalLastHint = found && { kind: found.kind, pieceId: found.pieceId, direction: found.direction, offset: found.offset }; // journal
@@ -435,11 +504,11 @@ function animate(duration, update) {
     animationFrame = requestAnimationFrame(tick);
   });
 }
-function completedMessage(gained = 0, doubled = false, didRise = true, usedTool = false) {
+function completedMessage(gained = 0, doubled = false, didRise = true, usedTool = null) {
   if (storageNoticePending && state.status === 'playing') { storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); return; }
   const doubledText = doubled === 'after-rise' ? 'Додано ряд, поле подвоїлось.' : state.skipNextRise ? 'Поле подвоїлось. Наступний хід без підйому.' : 'Поле подвоїлось. Показаний ряд чекає.';
   if (state.status === 'gameover') message('Верхній ряд зайнятий.', 'bad');
-  else if (usedTool) message(`Інструмент · +${gained} очок.${doubled ? ` ${doubledText}` : ''}`, 'good');
+  else if (usedTool) message(`${TOOL_UI[usedTool].done} · +${gained} очок.${doubled ? ` ${doubledText}` : ''}`, 'good');
   else if (gained && doubled) message(`Прибрано рядів: ${gained / 100} · +${gained}. ${doubledText}`, 'good');
   else if (gained) message(`Прибрано рядів: ${gained / 100} · +${gained} очок${didRise ? '' : '. Показаний ряд чекає.'}`, 'good');
   else if (doubled) message(doubledText, 'good');
@@ -457,6 +526,7 @@ function installState(next, text, restored = false) {
   actionEpoch++; cancelTween(); cancelDrag(); disarmTool(); clearSuggestion(); busy = false; selectedId = null; activePhase = null; rotationTween = null;
   hintDirection = 'clockwise'; successfulActions = restored ? next.turn : 0; rotated = false; selectHintShown = false;
   state = next;
+  buildToolButtons();
   journalHints = 0; journalLastHint = null; journalReadyAt = performance.now();
   scene = state.pieces; displayedScore = state.score;
   showNextRow(); refreshRotationPreviews();
@@ -466,12 +536,18 @@ function installState(next, text, restored = false) {
   else message(rotationHintActive() ? ROTATE_IDLE_HINT : 'Торкнись фігури, щоб обрати.');
   resize();
 }
-function startGame(lineTool) {
+// Starts a game from a loadout that takeLoadout accepted. The game is built first (it is pure), then the wallet with the charges
+// already taken out is stored BEFORE the new game record, so a break can lose charges but never duplicate them.
+function startGame(taken) {
   const gameSeed = seed();
-  const next = createGame({ cols: 8, rows: 12, seed: gameSeed, trial: true, lineTool });
+  const next = createGame({ cols: 8, rows: 12, seed: gameSeed, trial: true, tools: taken.tools });
+  wallet = taken.wallet; persistWallet(); updateCoins();
+  lastPicks = Object.fromEntries(taken.tools.map(({ kind, charges }) => [kind, charges]));
+  startTools = taken.tools.map(({ kind, charges }) => ({ kind, charges }));
+  paidCoins = null; walletWriteFailed = false;
   journalSafe(() => {
     const now = new Date();
-    startGameLog(journal, { seed: gameSeed, mode: `trial ${next.cols}x${next.rows}`, startedAt: now.getTime(), startedLabel: journalTime(now), device: parseDevice(navigator.userAgent), build: BUILD_ID });
+    startGameLog(journal, { seed: gameSeed, mode: `trial ${next.cols}x${next.rows}`, startedAt: now.getTime(), startedLabel: journalTime(now), device: parseDevice(navigator.userAgent), build: BUILD_ID, tools: taken.tools });
     resetCopyUi();
     refreshHistory();
   });
@@ -480,12 +556,22 @@ function startGame(lineTool) {
   if (storageNoticePending) { storageNoticePending = false; message(STORAGE_NOTICE, 'bad'); }
   persistGame(); persistJournal(); // a fresh game replaces the stored one; the best score and the journal stay
 }
-// Restores the stored best score, last game and journal; a damaged or foreign game record never blocks a new game.
+// Restores the stored best score, wallet, last game and journal; a damaged or foreign record never blocks a new game.
 async function initGame() {
-  const [bestRead, gameRead, journalRead] = await Promise.all([
-    storage.load(STORAGE_KEYS.best), readSavedRecord('game'), readSavedRecord('journal'),
+  const [bestRead, walletRead, gameRead, journalRead] = await Promise.all([
+    storage.load(STORAGE_KEYS.best), storage.load(WALLET_STORAGE_KEY), readSavedRecord('game'), readSavedRecord('journal'),
   ]);
   if (bestRead.ok) { const parsed = parseBest(bestRead.value); if (parsed.ok) best = parsed.score; }
+  // No wallet yet (a first launch, or a player of the previous build): the starter set is issued once and stored.
+  // A wallet that cannot be read is replaced by a new starter set and the player is told.
+  const storedWallet = walletRead.ok ? parseWallet(walletRead.value) : null;
+  let notice = '';
+  if (storedWallet?.ok) wallet = storedWallet.wallet;
+  else {
+    wallet = createStarterWallet(); persistWallet();
+    if (walletRead.ok || walletRead.reason !== 'missing') notice = WALLET_NOTICE;
+  }
+  updateCoins();
   if (journalRead.ok) {
     const imported = importJournal(journalRead.value);
     if (imported.ok) journal.games = imported.journal.games;
@@ -493,36 +579,50 @@ async function initGame() {
   const record = gameRead.ok ? parseGame(gameRead.value) : null;
   if (!record?.ok) {
     const damaged = gameRead.ok || gameRead.reason !== 'missing';
-    showLoadout(damaged ? 'Збережену партію не вдалося відновити. Обери набір для нової.' : '');
+    openLoadout({ notice: [notice, damaged ? 'Збережену партію не вдалося відновити.' : ''].filter(Boolean).join(' ') });
     return;
   }
   const bestStored = best;
   best = Math.max(best, record.state.score, record.bestAtStart);
   if (best > bestStored) persistSafe(() => storage.save(STORAGE_KEYS.best, serializeBest(best)));
   bestAtStart = record.bestAtStart; recordBase = Math.max(best, bestAtStart);
+  const gameOver = record.state.status === 'gameover';
+  const settledBefore = record.coinsPaid !== undefined; // already paid: a loss, or a game replaced through "Нова гра"
+  paidCoins = record.coinsPaid ?? null;
   journalSafe(() => {
     const last = latestGame(journal);
-    if (record.state.status === 'gameover') { if (last && !last.end) finishGameLog(journal, record.state, { endedAt: record.savedAt }); }
+    if (settledBefore) { if (last && !last.end && (gameOver || hasProgress(record.state))) finishGameLog(journal, record.state, { endedAt: record.savedAt, coins: record.coinsPaid }); }
+    else if (gameOver) { /* an unpaid loss is closed together with its payout below */ }
     else if (!last || last.end) {
       startGameLog(journal, { seed: 0, mode: `trial ${record.state.cols}x${record.state.rows} restored`, startedAt: record.savedAt, startedLabel: null, device: parseDevice(navigator.userAgent), build: BUILD_ID });
     }
     resetCopyUi();
     refreshHistory();
   });
+  startTools = recoverStartTools(record.state);
   installState(record.state, hasProgress(record.state) ? 'Партію відновлено.' : '', true);
+  if (gameOver && paidCoins === null) settleCurrentGame({ endedAt: record.savedAt }); // a loss saved before it was paid: pay it once
+  if (notice) message(notice, 'bad');
   if (gameRead.legacy || record.migrated) persistGame();
   persistBest(); persistJournal();
+  // A game replaced through "Нова гра" was paid and its charges went back to the stock: it is not played on, a new set is chosen.
+  if (settledBefore && !gameOver) {
+    const info = record.coinsPaid > 0 ? `Попередню партію зараховано: +${record.coinsPaid.toLocaleString('uk-UA')} монет.` : 'Попередню партію закрито.';
+    openLoadout({ notice, info });
+  }
 }
 async function commit(result, initialScene = scene) {
   if (!result.changed) { invalidFeedback('Шлях зайнятий. Спробуй обійти перешкоду.'); render(); return; }
   cancelPreviewTransition();
   const epoch = ++actionEpoch, oldScore = state.score;
   const firstEvent = result.events[0]?.type;
-  const usedTool = firstEvent === 'hammer' || firstEvent === 'tool';
+  const toolKind = firstEvent === 'hammer' ? 'hammer' : firstEvent === 'tool' ? result.events[0].kind : null;
+  const usedTool = toolKind !== null;
   if (!usedTool) successfulActions++;
   clearSuggestion();
   journalSafe(() => journalRecord(state, result)); // journal: successful actions only
   state = result.state; selectedId = null; busy = true; scene = initialScene;
+  if (state.status === 'gameover') settleCurrentGame(); // a loss pays the game once: record, then wallet, then the journal end
   persistBest(); persistGame(); persistJournal(); // the finished turn is stored BEFORE the animation starts
   message('Фігури займають свої місця…'); render();
   const hasDouble = result.events.some((event) => event.type === 'double');
@@ -573,10 +673,10 @@ async function commit(result, initialScene = scene) {
   scene = state.pieces; displayedScore = state.score; journalReadyAt = performance.now();
   if (!didRise || waitingForDebut || state.status === 'gameover') showNextRow();
   refreshRotationPreviews();
-  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled, didRise, usedTool); render();
+  activePhase = null; busy = false; completedMessage(state.score - oldScore, doubled, didRise, toolKind); render();
 }
 function rotate(direction) {
-  if (busy || drag || activeTool || confirmBox.open || !selectedId || state.status !== 'playing') return;
+  if (busy || drag || activeTool || modalOpen() || !selectedId || state.status !== 'playing') return;
   const result = rotatePiece(state, selectedId, direction);
   if (result.changed) { rotated = true; commit(result); }
 }
@@ -615,8 +715,23 @@ function disarmTool() {
   toolPreview = null;
   cancelToolGesture();
 }
+// Zero to two tool buttons, one per slot of the game (any kinds); the rotation buttons stay in the same toolbar.
+function buildToolButtons() {
+  for (const button of toolButtons) button.remove();
+  toolButtons = (state.tools ?? []).map((slot) => {
+    const button = document.createElement('button');
+    button.className = 'tool-button'; button.type = 'button'; button.disabled = true;
+    button.dataset.kind = slot.kind; button.setAttribute('aria-pressed', 'false');
+    const label = document.createElement('span'); label.setAttribute('aria-hidden', 'true'); label.textContent = TOOL_UI[slot.kind].short;
+    const count = document.createElement('span'); count.className = 'tool-count'; count.setAttribute('aria-hidden', 'true'); count.textContent = slot.charges;
+    button.append(label, count);
+    button.addEventListener('click', () => toggleTool(slot.kind));
+    toolbar.append(button);
+    return button;
+  });
+}
 function toggleTool(kind) {
-  if (!state || busy || drag || toolGesture || confirmBox.open || state.status !== 'playing'
+  if (!state || busy || drag || toolGesture || modalOpen() || state.status !== 'playing'
     || !state.tools?.find((slot) => slot.kind === kind)?.charges) return;
   if (activeTool === kind) {
     disarmTool();
@@ -654,13 +769,13 @@ function cancelToolSelection() {
 }
 $('cancelTool').addEventListener('click', cancelToolSelection);
 applyTool.addEventListener('click', () => {
-  if (!activeTool || !toolPreview || toolGesture || busy || confirmBox.open) return;
+  if (!activeTool || !toolPreview || toolGesture || busy || modalOpen()) return;
   const result = useTool(state, activeTool, toolPreview.target);
   disarmTool();
   commit(result);
 });
 board.addEventListener('pointerdown', (event) => {
-  if (!state || confirmBox.open || busy || state.status !== 'playing' || event.button > 0 || !event.isPrimary || drag || toolGesture) return;
+  if (!state || modalOpen() || busy || state.status !== 'playing' || event.button > 0 || !event.isPrimary || drag || toolGesture) return;
   event.preventDefault(); board.focus({ preventScroll: true });
   const position = boardCell(event);
   if (activeTool) {
@@ -697,7 +812,7 @@ board.addEventListener('pointerup', (event) => {
     const gesture = toolGesture;
     const validTap = !movedDuringToolTap(event, gesture) && targetAt(boardCell(event)) === gesture.target;
     cancelToolGesture();
-    if (validTap && activeTool && !confirmBox.open && !busy) previewTool(gesture.target);
+    if (validTap && activeTool && !modalOpen() && !busy) previewTool(gesture.target);
     return;
   }
   if (!drag || drag.pointerId !== event.pointerId) return;
@@ -748,7 +863,7 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 board.addEventListener('keydown', (event) => {
-  if (!selectedId || busy || drag || activeTool || confirmBox.open || state.status !== 'playing') return;
+  if (!selectedId || busy || drag || activeTool || modalOpen() || state.status !== 'playing') return;
   if (event.key.toLowerCase() === 'r') { event.preventDefault(); rotate(event.shiftKey ? 'counterclockwise' : 'clockwise'); return; }
   const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
   if (direction) { event.preventDefault(); commit(movePieceAlongPath(state, selectedId, [{ x: direction[0], y: direction[1] }])); }
@@ -760,7 +875,6 @@ for (const [direction, button] of Object.entries(rotationButtons)) {
   button.addEventListener('click', () => rotate(direction));
 }
 hintButton.addEventListener('click', requestHint);
-toolButtons.forEach((button, index) => button.addEventListener('click', () => toggleTool(state?.tools?.[index]?.kind)));
 // --- Copy results (DEMO_PLAN 18): clipboard write inside the click handler; read-only textarea as the fallback.
 const copyGroups = {
   result: {
@@ -884,37 +998,163 @@ function refreshHistory() {
     item.append(info, button); historyList.append(item);
   }
 }
-// Choosing a starting set confirms the replacement of an unfinished game.
+// --- "Нова гра" and the preparation screen (DEMO_PLAN 24, package B).
+// A game with progress is paid and closed first (after a confirmation); a game without progress only gives its charges back.
 const confirmCancel = $('confirmCancel');
-function showLoadout(notice = '') {
-  if (confirmBox.open) return;
+const loadoutCancel = $('loadoutCancel'), loadoutStart = $('loadoutStart'), loadoutNotice = $('loadoutNotice');
+const loadoutList = $('loadoutList'), loadoutSummary = $('loadoutSummary');
+let picks = {}, loadoutCancellable = false, loadoutUndo = false;
+const DEFAULT_HAMMERS = 3;
+const coinsText = (n) => `${n.toLocaleString('uk-UA')} монет`;
+const shopRows = new Map();
+for (const kind of TOOL_KINDS) {
+  const row = document.createElement('li'); row.className = 'shop-row'; row.dataset.kind = kind;
+  const head = document.createElement('div'); head.className = 'shop-head';
+  const name = document.createElement('b'); name.className = 'shop-name'; name.textContent = TOOL_UI[kind].name;
+  const price = document.createElement('span'); price.className = 'shop-price'; price.textContent = coinsText(PRICES[kind]);
+  const stock = document.createElement('span'); stock.className = 'shop-stock';
+  head.append(name, price, stock);
+  const controls = document.createElement('div'); controls.className = 'shop-controls';
+  const buy = document.createElement('button'); buy.type = 'button'; buy.className = 'secondary-button shop-buy';
+  const take = document.createElement('div'); take.className = 'shop-take'; take.setAttribute('role', 'group'); take.setAttribute('aria-label', `Взяти в партію: ${TOOL_UI[kind].name.toLowerCase()}`);
+  const takeLabel = document.createElement('span'); takeLabel.className = 'shop-take-label'; takeLabel.textContent = 'Взяти';
+  const minus = document.createElement('button'); minus.type = 'button'; minus.className = 'step-button'; minus.textContent = '−'; minus.setAttribute('aria-label', `Взяти менше: ${TOOL_UI[kind].name.toLowerCase()}`);
+  const value = document.createElement('output'); value.className = 'step-value';
+  const plus = document.createElement('button'); plus.type = 'button'; plus.className = 'step-button'; plus.textContent = '+'; plus.setAttribute('aria-label', `Взяти більше: ${TOOL_UI[kind].name.toLowerCase()}`);
+  take.append(takeLabel, minus, value, plus);
+  controls.append(buy, take);
+  const note = document.createElement('p'); note.className = 'shop-note';
+  row.append(head, controls, note); loadoutList.append(row);
+  shopRows.set(kind, { buy, minus, plus, value, stock, note });
+  buy.addEventListener('click', () => {
+    if (!loadoutBox.open) return;
+    const bought = buyCharge(wallet, kind);
+    if (!bought.ok) return;
+    wallet = bought.wallet; persistWallet(); updateCoins(); // a purchase is stored at once
+    renderLoadout();
+  });
+  minus.addEventListener('click', () => { if (picks[kind] > 0) { picks[kind] -= 1; renderLoadout(); } });
+  plus.addEventListener('click', () => { if (!takeBlock(kind)) { picks[kind] = (picks[kind] ?? 0) + 1; renderLoadout(); } });
+}
+// Why one more charge of `kind` cannot be taken, as a short text, or '' when it can.
+function takeBlock(kind) {
+  const have = picks[kind] ?? 0;
+  if (wallet.stock[kind] === 0) return 'Немає в запасі';
+  if (have >= wallet.stock[kind]) return 'Весь запас взято';
+  const plan = planLoadout(wallet, { ...picks, [kind]: have + 1 });
+  if (plan.ok) return '';
+  return { 'too-many-kinds': `Не більше ${MAX_KINDS} видів`, 'too-many-charges': `Не більше ${MAX_CARRY} зарядів`, 'invalid-count': `Не більше ${MAX_CARRY} зарядів`, 'not-in-stock': 'Немає в запасі' }[plan.reason] ?? 'Недоступно';
+}
+function renderLoadout() {
+  $('loadoutCoins').textContent = wallet.coins.toLocaleString('uk-UA');
+  let total = 0, kinds = 0;
+  for (const kind of TOOL_KINDS) {
+    const row = shopRows.get(kind), count = picks[kind] ?? 0;
+    total += count; if (count > 0) kinds += 1;
+    row.stock.textContent = `Запас ${wallet.stock[kind]} з ${STOCK_LIMITS[kind]}`;
+    row.buy.textContent = `Купити +1 (${PRICES[kind]})`;
+    row.buy.setAttribute('aria-label', `Купити один заряд: ${TOOL_UI[kind].name.toLowerCase()}, ${coinsText(PRICES[kind])}`);
+    const bought = buyCharge(wallet, kind);
+    row.buy.disabled = !bought.ok;
+    const buyNote = bought.ok ? '' : bought.reason === 'at-limit' ? 'Запас заповнено' : 'Не вистачає монет';
+    const blocked = takeBlock(kind);
+    row.value.textContent = count;
+    row.minus.disabled = count === 0;
+    row.plus.disabled = Boolean(blocked);
+    row.note.textContent = [buyNote, blocked].filter(Boolean).join(' · ');
+  }
+  loadoutSummary.textContent = `Взято ${total} з ${MAX_CARRY}, видів ${kinds} з ${MAX_KINDS}`;
+}
+// The last choice is offered again, cut down to what the stock and the rules allow now.
+function offeredPicks() {
+  const offered = {};
+  if (lastPicks === null) { // no remembered choice yet: a hammer x3 (or what the stock holds) is ready, the player may lower it to nothing
+    const count = Math.min(wallet.stock.hammer, DEFAULT_HAMMERS, MAX_CARRY);
+    if (count > 0) offered.hammer = count;
+    return offered;
+  }
+  let total = 0, kinds = 0;
+  for (const kind of TOOL_KINDS) {
+    const count = Math.min(lastPicks[kind] ?? 0, wallet.stock[kind], MAX_CARRY - total);
+    if (count <= 0 || kinds >= MAX_KINDS) continue;
+    offered[kind] = count; total += count; kinds += 1;
+  }
+  return offered;
+}
+// `notice` is an error text (damage), `info` a neutral one; the box is red only while it holds an error.
+function openLoadout({ cancellable = false, undo = false, notice = '', info = '' } = {}) {
+  if (loadoutBox.open) return;
   if (activeTool) { disarmTool(); completedMessage(); }
   cancelDrag();
-  const replacing = state?.status === 'playing' && hasProgress(state);
-  $('confirmText').textContent = notice || (replacing ? 'Нова партія замінить поточну.' : 'Обери два інструменти для нової партії.');
-  confirmCancel.hidden = !state;
-  confirmBox.showModal();
+  loadoutCancellable = cancellable && Boolean(state); loadoutUndo = loadoutCancellable && undo;
+  picks = offeredPicks();
+  loadoutNotice.replaceChildren();
+  for (const [text, tone] of [[notice, 'bad'], [info, 'info']]) {
+    if (!text) continue;
+    if (loadoutNotice.firstChild) loadoutNotice.append(' ');
+    const line = document.createElement('span'); line.className = `notice-${tone}`; line.textContent = text; loadoutNotice.append(line);
+  }
+  loadoutNotice.classList.toggle('has-bad', Boolean(notice));
+  loadoutNotice.hidden = !(notice || info);
+  loadoutCancel.hidden = !loadoutCancellable;
+  renderLoadout();
+  loadoutBox.showModal();
   render();
 }
-for (const [id, kind] of [['startArrow', 'arrow'], ['startCannon', 'cannon']]) {
-  $(id).addEventListener('click', () => {
-    if (!confirmBox.open) return;
-    confirmBox.close();
-    startGame(kind);
-  });
+// Cancel is offered only while nothing is lost: over a finished game, or over a game without progress whose charges were put back
+// (then they are taken again: the wallet first, so a break loses charges instead of duplicating them).
+function cancelLoadout() {
+  if (!loadoutBox.open || !loadoutCancellable) return;
+  if (loadoutUndo && paidCoins !== null && state.status === 'playing') {
+    const again = takeLoadout(wallet, Object.fromEntries(state.tools.map(({ kind, charges }) => [kind, charges])));
+    if (!again.ok) return;
+    wallet = again.wallet; persistWallet(); updateCoins();
+    paidCoins = null; persistGame();
+  }
+  loadoutBox.close();
 }
-confirmCancel.addEventListener('click', () => { if (state) confirmBox.close(); });
-confirmBox.addEventListener('cancel', (event) => { if (!state) event.preventDefault(); });
+function requestNewGame() {
+  if (!state || modalOpen()) return;
+  if (activeTool) { disarmTool(); completedMessage(); }
+  cancelDrag();
+  if (state.status === 'gameover') { openLoadout({ cancellable: true }); return; } // already paid: back to the loss screen is possible
+  if (paidCoins !== null) { openLoadout(); return; } // paid and replaced (restored): only a new game remains
+  if (hasProgress(state)) {
+    $('confirmText').textContent = `Партію буде зараховано як завершену: +${coinsForScore(state.score)} монет. Невикористані заряди повернуться в запас.`;
+    confirmBox.showModal();
+    render();
+    return;
+  }
+  settleCurrentGame({ finishJournal: false }); // no progress: the charges return, nothing is paid; Cancel takes them again
+  openLoadout({ cancellable: true, undo: true });
+}
+$('confirmYes').addEventListener('click', () => {
+  if (!confirmBox.open) return;
+  confirmBox.close();
+  settleCurrentGame();
+  openLoadout();
+});
+confirmCancel.addEventListener('click', () => { if (confirmBox.open) confirmBox.close(); });
 confirmBox.addEventListener('close', render);
+loadoutStart.addEventListener('click', () => {
+  if (!loadoutBox.open) return;
+  const taken = takeLoadout(wallet, picks);
+  if (!taken.ok) { renderLoadout(); return; }
+  loadoutBox.close();
+  startGame(taken);
+});
+loadoutCancel.addEventListener('click', cancelLoadout);
+loadoutBox.addEventListener('cancel', (event) => { event.preventDefault(); cancelLoadout(); }); // Escape never leaves a forced screen
+loadoutBox.addEventListener('close', render);
 document.addEventListener('keydown', (event) => {
-  if (confirmBox.open && event.key === 'Enter' && event.repeat) event.preventDefault();
-  if (!confirmBox.open && event.key === 'Escape' && activeTool) {
+  if (modalOpen() && event.key === 'Enter' && event.repeat) event.preventDefault();
+  if (!modalOpen() && event.key === 'Escape' && activeTool) {
     event.preventDefault();
     cancelToolSelection();
   }
 });
-$('newGameButton').addEventListener('click', () => { if (state) showLoadout(); });
-$('retryButton').addEventListener('click', () => showLoadout());
+$('newGameButton').addEventListener('click', requestNewGame);
+$('retryButton').addEventListener('click', requestNewGame);
 $('helpButton').addEventListener('click', () => {
   if (activeTool) { disarmTool(); completedMessage(); render(); }
   refreshHistory();
@@ -932,4 +1172,5 @@ historyDetails?.addEventListener('toggle', () => {
 $('closeHelp').addEventListener('click', () => $('helpDialog').close()); $('playButton').addEventListener('click', () => $('helpDialog').close());
 $('helpDialog').addEventListener('click', (e) => { if (e.target === $('helpDialog')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close(); } });
 new ResizeObserver(resize).observe(playArea);
+new ResizeObserver(() => fitHud(true)).observe(hud);
 await initGame();
