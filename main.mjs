@@ -1,9 +1,9 @@
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=a2-858196272c';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=a2-858196272c';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=a2-858196272c';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=a2-858196272c';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=a2-858196272c';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=a2-858196272c';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=wallet-8b68f623fb';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=wallet-8b68f623fb';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=wallet-8b68f623fb';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=wallet-8b68f623fb';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=wallet-8b68f623fb';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=wallet-8b68f623fb';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -906,6 +906,11 @@ const copyGroups = {
     success: 'Журнал партії скопійовано.', fallback: 'Скопіюйте журнал партії вручну.',
     epoch: 0, timer: 0,
   },
+  wallet: {
+    button: $('walletCopyButton'), status: $('walletCopyStatus'), area: $('walletCopyText'),
+    label: 'Скопіювати код', success: 'Код скопійовано.', fallback: 'Скопіюйте код вручну.', unavailable: 'Код недоступний.',
+    epoch: 0, timer: 0,
+  },
 };
 function resetCopyGroup(group) {
   group.epoch++;
@@ -948,7 +953,7 @@ function requestCopy(group, build) {
   const epoch = group.epoch;
   let text = '';
   try { text = build(); } catch {
-    if (group.status) group.status.textContent = 'Журнал недоступний.';
+    if (group.status) group.status.textContent = group.unavailable ?? 'Журнал недоступний.';
     return;
   }
   if (!text) { if (group.status) group.status.textContent = 'Немає даних для копіювання.'; return; }
@@ -1111,6 +1116,7 @@ function openLoadout({ cancellable = false, undo = false, notice = '', info = ''
   loadoutNotice.classList.toggle('has-bad', Boolean(notice));
   loadoutNotice.hidden = !(notice || info);
   loadoutCancel.hidden = !loadoutCancellable;
+  resetWalletBackup(); walletBackup.open = false; // the backup block is always folded when the screen opens
   renderLoadout();
   loadoutBox.showModal();
   render();
@@ -1157,9 +1163,67 @@ loadoutStart.addEventListener('click', () => {
   loadoutBox.close();
   startGame(taken);
 });
+// --- Wallet backup (package B+): copy a code of the wallet, or paste one and replace the wallet after a confirmation.
+// Only the preparation screen offers it, so a game is never running while the wallet is replaced. The game, the record and the journal stay as they are.
+const walletBackup = $('walletBackup'), walletPaste = $('walletPaste'), walletConfirm = $('walletConfirm');
+const walletRestoreButton = $('walletRestoreButton'), walletRestoreStatus = $('walletRestoreStatus');
+let pendingWallet = null; // a wallet read from a pasted code, waiting for "Замінити"
+const RESTORE_ERRORS = {
+  empty: 'Спершу вставте код.',
+  'too-long': 'Код задовгий. Вставте лише код гаманця.',
+  format: 'Це не схоже на код гаманця. Скопіюйте код повністю, від KRW2 до кінця.',
+  version: 'Цей код іншої версії, його не можна відновити.',
+  checksum: 'Код пошкоджений: щось скопійовано з помилкою або не повністю.',
+  'wallet-coins': 'У коді занадто багато монет. Гаманець не змінено.',
+  'wallet-stock-count': 'Запас у коді перевищує ліміт. Гаманець не змінено.',
+};
+function setRestoreStatus(text, bad = false) { walletRestoreStatus.textContent = text; walletRestoreStatus.classList.toggle('bad', bad); }
+function walletPreviewText(next) {
+  return `Монети ${next.coins.toLocaleString('uk-UA')} · Молоток ${next.stock.hammer} · Стріла ${next.stock.arrow} · Пушка ${next.stock.cannon} · Молот по області ${next.stock.areaHammer}`;
+}
+function cancelPendingWallet() { pendingWallet = null; walletConfirm.hidden = true; }
+function resetWalletBackup() {
+  resetCopyGroup(copyGroups.wallet);
+  cancelPendingWallet();
+  walletPaste.value = '';
+  setRestoreStatus('');
+}
+walletBackup.addEventListener('toggle', () => { if (walletBackup.open) walletBackup.scrollIntoView({ block: 'start' }); else resetWalletBackup(); });
+copyGroups.wallet.button.addEventListener('click', () => { if (loadoutBox.open) requestCopy(copyGroups.wallet, () => encodeWalletCode(wallet)); });
+walletPaste.addEventListener('input', () => { cancelPendingWallet(); setRestoreStatus(''); });
+walletRestoreButton.addEventListener('click', () => {
+  if (!loadoutBox.open) return;
+  cancelPendingWallet();
+  const decoded = decodeWalletCode(walletPaste.value);
+  if (!decoded.ok) { setRestoreStatus(RESTORE_ERRORS[decoded.reason] ?? 'Код не вдалося прочитати. Гаманець не змінено.', true); return; }
+  pendingWallet = decoded.wallet;
+  $('walletPreview').textContent = walletPreviewText(pendingWallet);
+  setRestoreStatus('');
+  walletConfirm.hidden = false;
+  walletConfirm.scrollIntoView({ block: 'nearest' });
+});
+$('walletReplaceCancel').addEventListener('click', () => { cancelPendingWallet(); setRestoreStatus('Гаманець не змінено.'); });
+$('walletReplace').addEventListener('click', () => {
+  if (!loadoutBox.open || !pendingWallet) return;
+  wallet = pendingWallet; cancelPendingWallet();
+  // The remembered choice and the one on screen are cut down to the new stock; the game, the record and the journal are not touched.
+  const fit = (chosen) => Object.fromEntries(TOOL_KINDS.map((kind) => [kind, Math.min(chosen[kind] ?? 0, wallet.stock[kind])]).filter(([, count]) => count > 0));
+  picks = fit(picks);
+  if (lastPicks !== null) lastPicks = fit(lastPicks);
+  if (loadoutUndo) { loadoutUndo = false; loadoutCancellable = false; loadoutCancel.hidden = true; } // the stock the undo would draw from is gone: only a new game remains
+  updateCoins(); renderLoadout();
+  walletPaste.value = '';
+  setRestoreStatus('Гаманець відновлено');
+  const replaced = wallet;
+  persistWallet().then((stored) => {
+    if (wallet !== replaced) return;
+    if (stored) walletWriteFailed = false;
+    else if (loadoutBox.open) setRestoreStatus('Гаманець відновлено, але браузер не зберіг його.', true);
+  });
+});
 loadoutCancel.addEventListener('click', cancelLoadout);
 loadoutBox.addEventListener('cancel', (event) => { event.preventDefault(); cancelLoadout(); }); // Escape never leaves a forced screen
-loadoutBox.addEventListener('close', render);
+loadoutBox.addEventListener('close', () => { resetWalletBackup(); render(); });
 document.addEventListener('keydown', (event) => {
   if (modalOpen() && event.key === 'Enter' && event.repeat) event.preventDefault();
   if (!modalOpen() && event.key === 'Escape' && activeTool) {

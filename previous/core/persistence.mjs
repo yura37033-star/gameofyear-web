@@ -8,16 +8,15 @@
 // continue differently. Explicit migrations preserve compatible records. The golden test
 // in tests/persistence.test.mjs detects changes in a game's continuation.
 //
-// Rules 4 (economy, DEMO_PLAN.md section 24) changes no rule of play: a record carries 0-2 tool slots chosen by the player
-// and an optional `coinsPaid` next to savedAt/bestAtStart. The bump keeps the published rules-3 build (which reads the
-// version-3 keys and accepts only rulesVersion 3) from loading such a record.
+// Rules 4 (economy) added a payout marker; rules 5 adds the area hammer tool. The rules-version bump keeps older builds
+// from loading a state with a tool kind they cannot use. Versions 1-4 migrate without changing their saved game or payout marker.
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   TOOL_CELL_POINTS, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece, validateToolSlots,
-} from './game.mjs?v=economy-5271c0f1ba';
+} from './game.mjs?v=a2-858196272c';
 
 export const SCHEMA_VERSION = 1;
-export const RULES_VERSION = 4;
+export const RULES_VERSION = 5;
 export const MAX_GAME_RECORD_BYTES = 64 * 1024;
 export const MAX_PIECES = 200;
 export const TRIAL_SIZE = Object.freeze({ cols: 8, rows: 12 });
@@ -376,6 +375,8 @@ function validateRecordTools(tools, version) {
     const [hammer, line] = checked.tools;
     need(hammer.kind === 'hammer' && (line.kind === 'arrow' || line.kind === 'cannon'), 'tool-kind');
     need(hammer.charges <= HAMMER_CHARGES && line.charges <= 1, 'tool-charges');
+  } else if (version === 4) {
+    need(checked.tools.every((slot) => slot.kind !== 'areaHammer'), 'tool-kind');
   }
   return checked.tools;
 }
@@ -488,7 +489,7 @@ export function parseGame(value) {
     need(isObject(value.state) && Array.isArray(value.state.pieces) && value.state.pieces.length <= MAX_PIECES, 'pieces-size');
     need(JSON.stringify(value).length <= MAX_GAME_RECORD_BYTES, 'too-large');
     // coinsPaid exists only from rules 4 on; absent means the coins of this game were not paid yet.
-    need(value.coinsPaid === undefined || (value.rulesVersion === RULES_VERSION && isInt(value.coinsPaid)), 'coins-paid');
+    need(value.coinsPaid === undefined || ((value.rulesVersion === 4 || value.rulesVersion === RULES_VERSION) && isInt(value.coinsPaid)), 'coins-paid');
     const state = validateState(value.state, value.rulesVersion);
     // The payout is 5 per full 100 points plus 10 per full 1000, so it can never exceed 6% of the score.
     need(value.coinsPaid === undefined || (state.trial && value.coinsPaid * 100 <= state.score * 6), 'coins-paid');
