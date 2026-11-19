@@ -1,4 +1,4 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=lamp-91fcf373ec';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=tools-v2-97d156fe48';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
@@ -10,6 +10,10 @@ export const MAX_TOOL_CARRY = 6;
 export const MAX_TOOL_KINDS = 2;
 export const TOOL_CHARGES = Object.freeze({ hammer: MAX_TOOL_CARRY, arrow: MAX_TOOL_CARRY, cannon: MAX_TOOL_CARRY, areaHammer: 3 });
 export const TOOL_CELL_POINTS = 10;
+// Tool effects (rules 6). The cannon removes CANNON_WIDTH neighbouring columns (the tap sets the left one); the area hammer removes
+// an AREA_SIZE x AREA_SIZE square (the tap sets its top-left cell). Near the right and bottom edges both shift inside the board.
+export const CANNON_WIDTH = 2;
+export const AREA_SIZE = 3;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
 // Rainbow strip (DEMO_PLAN.md section 13). RAINBOW_COLOR is not a palette colour: it is a
@@ -1259,27 +1263,37 @@ export function rotatePiece(state, pieceId, direction = 'clockwise') {
   return finalizeMove(state, pieceId, preview, { type: 'rotate', pieceId, direction });
 }
 
+// Area of the cannon for a tapped column: the left column is shifted inside the board near the right edge. One bounds function
+// serves the core and the interface preview. null for a target that is not a column of the board.
+export function cannonToolBounds(state, target) {
+  if (!state || !Number.isInteger(state.cols) || !Number.isInteger(state.rows) || state.cols < CANNON_WIDTH
+    || !Number.isInteger(target) || target < 0 || target >= state.cols) return null;
+  return { x: Math.min(target, state.cols - CANNON_WIDTH), y: 0, width: CANNON_WIDTH, height: state.rows };
+}
+
+// Area of the area hammer for a tapped cell index (y * cols + x): the top-left cell is shifted inside the board near the
+// right and bottom edges.
 export function areaToolBounds(state, target) {
-  if (!state || !Number.isInteger(state.cols) || !Number.isInteger(state.rows) || state.cols < 2 || state.rows < 2
+  if (!state || !Number.isInteger(state.cols) || !Number.isInteger(state.rows) || state.cols < AREA_SIZE || state.rows < AREA_SIZE
     || !Number.isInteger(target) || target < 0 || target >= state.cols * state.rows) return null;
   const tappedX = target % state.cols;
   const tappedY = Math.floor(target / state.cols);
-  return { x: Math.min(tappedX, state.cols - 2), y: Math.min(tappedY, state.rows - 2), width: 2, height: 2 };
+  return { x: Math.min(tappedX, state.cols - AREA_SIZE), y: Math.min(tappedY, state.rows - AREA_SIZE), width: AREA_SIZE, height: AREA_SIZE };
+}
+
+function cellsInBounds(state, bounds) {
+  if (!bounds || !Array.isArray(state.pieces)) return [];
+  const { x, y, width, height } = bounds;
+  return state.pieces.flatMap((piece) => piece.cells.filter((cell) => cell.x >= x && cell.x < x + width && cell.y >= y && cell.y < y + height)).map(cloneCell);
 }
 
 export function toolTargetCells(state, kind, target) {
   if (kind === 'hammer') return findPiece(state, target)?.cells.map(cloneCell) ?? [];
-  if (kind === 'areaHammer') {
-    const bounds = areaToolBounds(state, target);
-    if (!bounds || !Array.isArray(state.pieces)) return [];
-    const { x, y, width, height } = bounds;
-    return state.pieces.flatMap((piece) => piece.cells.filter((cell) => cell.x >= x && cell.x < x + width && cell.y >= y && cell.y < y + height)).map(cloneCell);
-  }
-  if (kind !== 'arrow' && kind !== 'cannon') return [];
-  const axis = kind === 'arrow' ? 'y' : 'x';
-  const size = kind === 'arrow' ? state.rows : state.cols;
-  if (!Number.isInteger(target) || target < 0 || target >= size) return [];
-  return state.pieces.flatMap((piece) => piece.cells.filter((cell) => cell[axis] === target)).map(cloneCell);
+  if (kind === 'areaHammer') return cellsInBounds(state, areaToolBounds(state, target));
+  if (kind === 'cannon') return cellsInBounds(state, cannonToolBounds(state, target));
+  if (kind !== 'arrow') return [];
+  if (!Number.isInteger(target) || target < 0 || target >= state.rows) return [];
+  return state.pieces.flatMap((piece) => piece.cells.filter((cell) => cell.y === target)).map(cloneCell);
 }
 
 export function useHammer(state, pieceId) {
@@ -1308,8 +1322,8 @@ export function useTool(state, kind, target) {
   let actionTarget = target;
   if (kind === 'areaHammer') {
     const bounds = areaToolBounds(state, target);
-    actionTarget = bounds.y * state.cols + bounds.x;
-  }
+    actionTarget = bounds.y * state.cols + bounds.x; // the clamped top-left cell
+  } else if (kind === 'cannon') actionTarget = cannonToolBounds(state, target).x; // the clamped left column
   const action = kind === 'hammer' ? { type: 'hammer', pieceId: target } : { type: 'tool', kind, target: actionTarget };
   addSnapshotEvent(events, { ...action, cells, gain }, pieces);
   const physics = resolvePhysics(pieces, state, events, idFactory.next);

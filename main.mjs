@@ -1,9 +1,9 @@
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=lamp-91fcf373ec';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=lamp-91fcf373ec';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=lamp-91fcf373ec';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=lamp-91fcf373ec';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=lamp-91fcf373ec';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=lamp-91fcf373ec';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=tools-v2-97d156fe48';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=tools-v2-97d156fe48';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=tools-v2-97d156fe48';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=tools-v2-97d156fe48';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=tools-v2-97d156fe48';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=tools-v2-97d156fe48';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -27,8 +27,8 @@ const modalOpen = () => confirmBox.open || loadoutBox.open;
 const TOOL_UI = {
   hammer: { name: 'Молоток', short: '🔨', done: 'Молоток застосовано', prompt: 'Торкнись фігури, яку хочеш прибрати.' },
   arrow: { name: 'Стріла', short: 'Стріла', done: 'Стрілу застосовано', prompt: 'Торкнись ряду, який хочеш прибрати.' },
-  cannon: { name: 'Пушка', short: 'Пушка', done: 'Пушку застосовано', prompt: 'Торкнись колонки, яку хочеш прибрати.' },
-  areaHammer: { name: 'Молот 2 × 2', short: '2 × 2', done: 'Молот 2 × 2 застосовано', prompt: 'Торкнись верхньої лівої клітинки області 2 × 2.' },
+  cannon: { name: 'Пушка', short: 'Пушка', done: 'Пушку застосовано', prompt: 'Торкнись лівої з двох колонок, які хочеш прибрати.' },
+  areaHammer: { name: 'Молот 3 × 3', short: '3 × 3', done: 'Молот 3 × 3 застосовано', prompt: 'Торкнись верхньої лівої клітинки області 3 × 3.' },
 };
 const TOOL_TAP_DISTANCE = 8;
 let activeTool = null, toolGesture = null, toolPreview = null;
@@ -111,7 +111,7 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const keys = [STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  const keys = [STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
   for (let index = 0; index < keys.length; index += 1) {
     const stored = await storage.load(keys[index]);
     if (stored.reason === 'missing') continue;
@@ -762,9 +762,9 @@ function drawToolPreview() {
   ctx.strokeStyle = '#ffe2a5';
   ctx.lineWidth = 2;
   if (activeTool === 'arrow') ctx.fillRect(0, target * cell, state.cols * cell, cell);
-  if (activeTool === 'cannon') ctx.fillRect(target * cell, 0, cell, state.rows * cell);
-  if (activeTool === 'areaHammer') {
-    const bounds = areaToolBounds(state, target);
+  if (activeTool === 'cannon' || activeTool === 'areaHammer') {
+    // The same bounds functions as the core: two columns / the 3 x 3 square, shifted inside the board near the edge.
+    const bounds = activeTool === 'cannon' ? cannonToolBounds(state, target) : areaToolBounds(state, target);
     if (bounds) {
       ctx.fillRect(bounds.x * cell, bounds.y * cell, bounds.width * cell, bounds.height * cell);
       ctx.strokeRect(bounds.x * cell + 1, bounds.y * cell + 1, bounds.width * cell - 2, bounds.height * cell - 2);

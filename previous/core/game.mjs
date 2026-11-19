@@ -1,4 +1,4 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=wallet-8b68f623fb';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=lamp-91fcf373ec';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
@@ -1420,6 +1420,18 @@ function actionFromSignature(state, signature) {
     || preview.lastValidOffset.y !== signature.path.at(-1)?.y
     || !sameCells(preview.cells, signature.cells)) return null;
   return { type: 'move', pieceId: signature.pieceId, path: preview.acceptedPath, preview };
+}
+
+export const HINT_PULSE_STACK = 10;
+
+// Read-only cue for the interface: true when the hint lamp should draw attention. Needs an active trial game, a stack of at
+// least HINT_PULSE_STACK rows and a verified path for the shown row (the same stored witness the journal records as reg1/reg2).
+// Pure: no RNG, no search, no state change.
+export function shouldPulseHint(state) {
+  if (!state || state.trial !== true || state.status !== 'playing' || !Array.isArray(state.pieces)) return false;
+  const steps = state._witness?.steps;
+  if (steps !== 1 && steps !== 2) return false;
+  return stackHeight(state.pieces, state.rows) >= HINT_PULSE_STACK;
 }
 
 export function suggestAction(state) {
