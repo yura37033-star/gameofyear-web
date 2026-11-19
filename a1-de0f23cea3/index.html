@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101c31">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Блоки">
+  <meta name="description" content="Кольорові ряди — головоломка з поворотами й ланцюговим очищенням рядів.">
+  <title>Кольорові ряди · Gameofyear</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23101c31'/%3E%3Cpath d='M7 7h8v8H7z' fill='%235D8FE8'/%3E%3Cpath d='M17 7h8v8h-8z' fill='%23F3C969'/%3E%3Cpath d='M7 17h8v8H7z' fill='%23F3C969'/%3E%3Cpath d='M17 17h8v8h-8z' fill='%235D8FE8'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css?v=a1-de0f23cea3">
+</head>
+<body>
+  <main class="layout">
+    <aside class="intro" aria-label="Про гру">
+      <span class="eyebrow"><i></i> GAMEOFYEAR</span>
+      <h1>Знайди<br>свій <em>хід.</em></h1>
+      <p>Рухай і повертай фігури. Заповнюй горизонтальні ряди.</p>
+      <div class="intro-tiles" aria-hidden="true"><b></b><b></b><b></b><b></b></div>
+    </aside>
+
+    <section class="game-shell" aria-label="Кольорові ряди">
+      <div class="game-header">
+        <header class="masthead">
+          <div class="brand"><div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div><span>Кольорові ряди</span></div>
+          <div class="masthead-actions">
+            <button id="hintButton" class="hint-button" type="button" aria-label="Підказати хід" title="Підказати хід">
+              <span class="hint-icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                  <path d="M9 18v-1a4 4 0 0 0-1.4-3.1 6 6 0 1 1 8.8 0A4 4 0 0 0 15 17v1H9m1 3h4"/>
+                </svg>
+              </span>
+            </button>
+            <button id="newGameButton" class="new-game-button" type="button">Нова гра</button>
+            <button id="helpButton" class="icon-button" type="button" aria-label="Як грати">?</button>
+          </div>
+        </header>
+        <div class="hud">
+          <div><span class="label">ОЧКИ<span id="best" class="best" aria-label="Рекорд">Рекорд 0</span></span><strong id="score">0</strong></div>
+          <div class="turn-card"><span class="label">ХОДІВ</span><b id="turn">0</b></div>
+          <div class="field-badge">8 <span>×</span> 12</div>
+        </div>
+      </div>
+
+      <div id="playArea" class="play-area">
+        <div class="board-slot">
+          <div id="boardFrame" class="board-frame">
+            <canvas id="board" aria-label="Ігрове поле. Вибери фігуру й перетягни вільним шляхом у будь-який бік." tabindex="0"></canvas>
+            <div id="gameOver" class="game-over" hidden>
+              <div class="game-over-card">
+                <h2>Гру завершено</h2>
+                <p>Верхній ряд залишився зайнятим.</p>
+                <p id="newRecord" class="new-record" role="status" hidden>Новий рекорд!</p>
+                <strong id="finalScore">0</strong>
+                <span class="label">НАБРАНО ОЧОК</span>
+                <button id="retryButton" class="primary-button" type="button">Ще партію <span>↗</span></button>
+                <button id="copyResultButton" class="secondary-button" type="button" aria-label="Скопіювати результати партії">Скопіювати результати</button>
+                <textarea id="copyResultText" class="copy-text" readonly hidden rows="3" aria-label="Текст результатів для ручного копіювання"></textarea>
+                <p id="copyResultStatus" class="copy-status" role="status" aria-live="polite"></p>
+              </div>
+            </div>
+            <div id="gain" class="score-gain" aria-hidden="true"></div>
+          </div>
+        </div>
+        <section class="next-section" aria-labelledby="nextRowLabel">
+          <div class="next-label"><span id="nextRowLabel">Наступний ряд</span><span class="next-arrow" aria-hidden="true">↑</span></div>
+          <canvas id="nextRow" aria-label="Наступний ряд"></canvas>
+        </section>
+      </div>
+
+      <div id="toolbar" class="toolbar">
+        <button id="rotateLeftButton" class="rotate-button" type="button" aria-label="Повернути вліво" disabled><span class="rotate-icon" aria-hidden="true">↶</span>Вліво</button>
+        <button id="rotateRightButton" class="rotate-button" type="button" aria-label="Повернути вправо" disabled><span class="rotate-icon" aria-hidden="true">↷</span>Вправо</button>
+        <button id="hammerButton" class="tool-button" type="button" aria-pressed="false" aria-label="Молоток, 3 заряди" disabled>
+          <span aria-hidden="true">🔨</span><span id="hammerCount" class="tool-count" aria-hidden="true">3</span>
+        </button>
+        <button id="lineToolButton" class="tool-button" type="button" aria-pressed="false" aria-label="Стріла, 1 заряд" disabled>
+          <span id="lineToolName" aria-hidden="true">Стріла</span><span id="lineToolCount" class="tool-count" aria-hidden="true">1</span>
+        </button>
+      </div>
+      <div id="toolActions" class="tool-actions" hidden>
+        <button id="cancelTool" class="secondary-button" type="button">Скасувати</button>
+        <button id="applyTool" class="secondary-button apply-tool" type="button">Застосувати</button>
+      </div>
+      <p id="status" class="status" role="status" aria-live="polite">Торкнись фігури, щоб обрати.</p>
+      <noscript>Для гри потрібно увімкнути JavaScript у браузері.</noscript>
+    </section>
+  </main>
+
+  <dialog id="helpDialog" aria-labelledby="helpTitle">
+    <div class="help-heading">
+      <h2 id="helpTitle">Як грати</h2>
+      <button id="closeHelp" class="icon-button" type="button" aria-label="Закрити довідку">×</button>
+    </div>
+    <details id="gameHistory" class="history">
+      <summary>Історія партій</summary>
+      <div class="history-content">
+        <p id="historyEmpty" class="history-empty" hidden>Журнал поки порожній.</p>
+        <ul id="historyList" class="history-list"></ul>
+        <textarea id="copyHistoryText" class="copy-text" readonly hidden rows="4" aria-label="Журнал вибраної партії для ручного копіювання"></textarea>
+        <p id="copyHistoryStatus" class="copy-status" role="status" aria-live="polite"></p>
+      </div>
+    </details>
+    <ol class="rules">
+      <li><b>Переміщуй фігури</b><p>Перетягни фігуру вгору, вниз або вбік вільним шляхом. Зміна позиції після відпускання коштує один хід.</p></li>
+      <li><b>Повертай фігури зі світлою рамкою</b><p>Обери таку фігуру й натисни Вліво чи Вправо. Поворот — повноцінний хід, як і переміщення; за потреби фігуру підіймає до вільної позиції.</p></li>
+      <li><b>Підказати хід</b><p>Натисни лампочку біля «Нова гра». Протягом усієї партії вона може показати фігуру й місце або поворот, що ведуть до очищення. Запит підказки коштує 0 ходів.</p></li>
+      <li><b>Інструменти</b><p>Молоток прибирає цілу фігуру, стріла — ряд, пушка — колонку. Торкнись інструмента і цілі, а тоді натисни «Застосувати» або «Скасувати». За кожну прибрану інструментом клітинку — 10 очок, за звичайне очищення ряду — 100. Інструмент коштує 0 ходів. Порожнє поле заповнюється показаним рядом.</p></li>
+      <li><b>Заповнюй горизонтальні ряди</b><p>Повний ряд очищається, якщо всі блоки одного кольору або в ньому є райдужна клітинка. Кожен очищений ряд дає 100 очок. Якщо ряд зник до підйому, показаний ряд зазвичай чекає. Від 3000 очок додається другий колір, а від 4000 — райдужна смужка.</p></li>
+    </ol>
+    <div class="help-tip">Партія завершується, якщо після падіння й очищень верхній ряд зайнятий. Біля верху або після шести ходів без очищення гра може підібрати рятувальний ряд. До 1000 очок можлива разова пауза підйому.</div>
+    <button id="copyJournalButton" class="secondary-button" type="button" aria-label="Скопіювати журнал останніх партій">Скопіювати журнал партій</button>
+    <textarea id="copyJournalText" class="copy-text" readonly hidden rows="5" aria-label="Текст журналу для ручного копіювання"></textarea>
+    <p id="copyJournalStatus" class="copy-status" role="status" aria-live="polite"></p>
+    <button id="playButton" class="primary-button" type="button">До гри <span>→</span></button>
+  </dialog>
+  <dialog id="confirmNew" class="loadout-dialog" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+    <div class="confirm-card">
+      <h2 id="confirmTitle">Обери набір</h2>
+      <p id="confirmText">Набір для нової партії.</p>
+      <div class="loadout-options">
+        <button id="startArrow" class="primary-button" type="button">Молоток ×3 + стріла ×1</button>
+        <button id="startCannon" class="primary-button" type="button">Молоток ×3 + пушка ×1</button>
+      </div>
+      <button id="confirmCancel" class="secondary-button" type="button">Скасувати</button>
+    </div>
+  </dialog>
+  <script type="module" src="./main.mjs?v=a1-de0f23cea3"></script>
+</body>
+</html>
