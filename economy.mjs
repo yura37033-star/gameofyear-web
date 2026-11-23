@@ -6,7 +6,7 @@
 // "Нова гра"): 5 per full 100 points plus 10 per full 1000. A new player gets 200 coins and 3 hammer charges, once.
 // A game takes at most 2 tool kinds and at most 6 charges in total, chosen by the player (zero tools is allowed). Unused
 // charges go back to the stock when the game ends. Charges are bought one at a time; at the stock limit nothing is sold.
-import { MAX_TOOL_CARRY, MAX_TOOL_KINDS, TOOL_ORDER } from './core/game.mjs?v=arrow-icons-8ef53aa1f9';
+import { MAX_TOOL_CARRY, MAX_TOOL_KINDS, TOOL_ORDER } from './core/game.mjs?v=balance3000-c324bf1e7a';
 
 export const WALLET_VERSION = 2;
 export const TOOL_KINDS = TOOL_ORDER; // slot order is always hammer, arrow, cannon, area hammer

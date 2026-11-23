@@ -116,7 +116,7 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 7px;
   min-width: 44px;
   min-height: 44px;
   padding: 0 6px;
@@ -128,6 +128,8 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
   font-weight: 750;
 }
 .tool-button[aria-pressed="true"], .tool-actions .apply-tool { background: #f3c969; color: #241b10; }
+.tool-icon { flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.tool-button .tool-icon { width: 24px; height: 24px; }
 .tool-count { min-width: 1.25em; text-align: center; font-variant-numeric: tabular-nums; }
 .tool-actions .secondary-button { flex: 1; width: auto; margin: 0; }
 .tool-actions .apply-tool:hover { background: #f8d98a; }
@@ -145,7 +147,7 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
 .shop-coins{margin:0 0 8px!important;text-align:center;font-size:14px!important;color:#c4d3ea!important}.shop-coins strong{color:#f6d88d;font-size:18px;font-variant-numeric:tabular-nums}
 .shop-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .shop-row{border:1px solid var(--line);border-radius:12px;background:#ffffff05;padding:8px 10px 6px}
-.shop-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.shop-name{font-size:14px}.shop-price{font-size:11px;color:#8da3c2}.shop-stock{margin-left:auto;font-size:11px;color:#c4d3ea;font-variant-numeric:tabular-nums;white-space:nowrap}
+.shop-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.shop-head .tool-icon{width:26px;height:26px;color:#f6d88d}.shop-name{font-size:14px}.shop-price{font-size:11px;color:#8da3c2}.shop-stock{margin-left:auto;font-size:11px;color:#c4d3ea;font-variant-numeric:tabular-nums;white-space:nowrap}
 .shop-controls{display:flex;align-items:center;gap:8px;margin-top:6px}
 .shop-controls .shop-buy{flex:1 1 0;width:auto;min-width:0;margin:0;padding:0 8px;font-size:12px;white-space:nowrap}
 .shop-take{display:flex;align-items:center;flex:0 0 auto}.shop-take-label{font-size:11px;color:#8da3c2;margin-right:6px}
@@ -219,4 +221,11 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
   .game-over-card .primary-button { padding: 8px 10px; }
   .game-over-card .secondary-button { margin-top: 4px; }
 }
+.rules .help-tools{list-style:none;margin:8px 0 6px;padding:0;display:grid;gap:8px}
+.rules .help-tools li{display:flex;align-items:flex-start;gap:10px;margin:0;padding:0;counter-increment:none}
+.rules .help-tools li::before{content:none}
+.help-tool-chip{flex:0 0 auto;width:34px;height:34px;display:grid;place-items:center;border:1px solid #f3c96966;border-radius:10px;background:#f3c96912;color:#f6d88d}
+.help-tool-chip .tool-icon{width:22px;height:22px}
+.rules .help-tools li>span:last-child{font-size:12px;line-height:1.5;color:#99aecb;padding-top:2px}
+.rules .help-tools b{color:#e4edfb}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}

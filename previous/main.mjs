@@ -1,9 +1,9 @@
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=tools-v2-97d156fe48';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=tools-v2-97d156fe48';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=tools-v2-97d156fe48';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=tools-v2-97d156fe48';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=tools-v2-97d156fe48';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=tools-v2-97d156fe48';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=arrow-icons-8ef53aa1f9';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=arrow-icons-8ef53aa1f9';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=arrow-icons-8ef53aa1f9';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=arrow-icons-8ef53aa1f9';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=arrow-icons-8ef53aa1f9';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=arrow-icons-8ef53aa1f9';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -25,11 +25,25 @@ const toolbar = $('toolbar'), toolActions = $('toolActions'), applyTool = $('app
 const confirmBox = $('confirmNew'), loadoutBox = $('loadoutDialog');
 const modalOpen = () => confirmBox.open || loadoutBox.open;
 const TOOL_UI = {
-  hammer: { name: 'Молоток', short: '🔨', done: 'Молоток застосовано', prompt: 'Торкнись фігури, яку хочеш прибрати.' },
-  arrow: { name: 'Стріла', short: 'Стріла', done: 'Стрілу застосовано', prompt: 'Торкнись ряду, який хочеш прибрати.' },
-  cannon: { name: 'Пушка', short: 'Пушка', done: 'Пушку застосовано', prompt: 'Торкнись лівої з двох колонок, які хочеш прибрати.' },
-  areaHammer: { name: 'Молот 3 × 3', short: '3 × 3', done: 'Молот 3 × 3 застосовано', prompt: 'Торкнись верхньої лівої клітинки області 3 × 3.' },
+  hammer: { name: 'Молоток', done: 'Молоток застосовано', prompt: 'Торкнись фігури, яку хочеш прибрати.' },
+  arrow: { name: 'Стріла 2 ряди', done: 'Стрілу застосовано', prompt: 'Торкнись ряду: буде прибрано цей і наступний.' },
+  cannon: { name: 'Гармата', done: 'Гармату застосовано', prompt: 'Торкнись лівої з двох колонок, які хочеш прибрати.' },
+  areaHammer: { name: 'Молот 3 × 3', done: 'Молот 3 × 3 застосовано', prompt: 'Торкнись верхньої лівої клітинки області 3 × 3.' },
 };
+// One source of truth for the tool icons (trusted constants; stroke and size come from CSS). The help legend in index.html repeats the same markup; a test keeps both equal.
+const ICONS = {
+  hammer: '<svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9.5" y="3" width="11" height="6" rx="1.4" transform="rotate(45 15 6)"/><path d="M11.4 10.4L4.6 17.2a1.9 1.9 0 0 0 2.7 2.7l6.8-6.8"/></svg>',
+  arrow: '<svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3.5" width="20" height="17" rx="3" stroke-opacity=".5"/><path d="M5.5 12h12.5M13.5 7.5L18.5 12l-5 4.5M5.5 12l-1.6-2.4M5.5 12l-1.6 2.4" stroke-width="2"/></svg>',
+  cannon: '<svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="3"/><path d="M9 7.5h6l.8 8.5H8.2z"/><path d="M7 16h10v2.4H7z"/><path d="M9 21.3v.2M12 21.3v.2M15 21.3v.2" stroke-width="2.4"/></svg>',
+  areaHammer: '<svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="19" height="19" rx="3.5" stroke-opacity=".5"/><path d="M12 5.5v13M5.5 12h13M7.4 7.4l9.2 9.2M16.6 7.4l-9.2 9.2"/></svg>',
+};
+function toolIcon(kind, size) {
+  const holder = document.createElement('template');
+  holder.innerHTML = ICONS[kind];
+  const icon = holder.content.firstElementChild;
+  icon.setAttribute('width', size); icon.setAttribute('height', size);
+  return icon;
+}
 const TOOL_TAP_DISTANCE = 8;
 let activeTool = null, toolGesture = null, toolPreview = null;
 let successfulActions = 0, rotated = false, selectHintShown = false;
@@ -111,7 +125,7 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const keys = [STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  const keys = [STORAGE_KEYS[slot], RULES_V6_STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
   for (let index = 0; index < keys.length; index += 1) {
     const stored = await storage.load(keys[index]);
     if (stored.reason === 'missing') continue;
@@ -390,7 +404,7 @@ function render() {
     const count = button.lastElementChild;
     if (count.textContent !== String(slot.charges)) count.textContent = slot.charges;
     const start = startTools?.find((item) => item.kind === slot.kind)?.charges;
-    button.setAttribute('aria-label', `${TOOL_UI[slot.kind].name}. Заряди ${slot.charges}${start === undefined ? '' : ` з ${start}`}`);
+    button.setAttribute('aria-label', `${TOOL_UI[slot.kind].name}, зарядів ${slot.charges}${start === undefined ? '' : ` з ${start}`}`);
   }
   $('coins').textContent = wallet.coins.toLocaleString('uk-UA');
   toolbar.hidden = Boolean(toolPreview);
@@ -735,9 +749,8 @@ function buildToolButtons() {
     const button = document.createElement('button');
     button.className = 'tool-button'; button.type = 'button'; button.disabled = true;
     button.dataset.kind = slot.kind; button.setAttribute('aria-pressed', 'false');
-    const label = document.createElement('span'); label.setAttribute('aria-hidden', 'true'); label.textContent = TOOL_UI[slot.kind].short;
     const count = document.createElement('span'); count.className = 'tool-count'; count.setAttribute('aria-hidden', 'true'); count.textContent = slot.charges;
-    button.append(label, count);
+    button.append(toolIcon(slot.kind, 24), count);
     button.addEventListener('click', () => toggleTool(slot.kind));
     toolbar.append(button);
     return button;
@@ -761,10 +774,9 @@ function drawToolPreview() {
   ctx.fillStyle = '#f3c96925';
   ctx.strokeStyle = '#ffe2a5';
   ctx.lineWidth = 2;
-  if (activeTool === 'arrow') ctx.fillRect(0, target * cell, state.cols * cell, cell);
-  if (activeTool === 'cannon' || activeTool === 'areaHammer') {
-    // The same bounds functions as the core: two columns / the 3 x 3 square, shifted inside the board near the edge.
-    const bounds = activeTool === 'cannon' ? cannonToolBounds(state, target) : areaToolBounds(state, target);
+  if (activeTool === 'arrow' || activeTool === 'cannon' || activeTool === 'areaHammer') {
+    // The same bounds functions as the core: two rows / two columns / the 3 x 3 square, shifted inside the board near the edge.
+    const bounds = activeTool === 'arrow' ? arrowToolBounds(state, target) : activeTool === 'cannon' ? cannonToolBounds(state, target) : areaToolBounds(state, target);
     if (bounds) {
       ctx.fillRect(bounds.x * cell, bounds.y * cell, bounds.width * cell, bounds.height * cell);
       ctx.strokeRect(bounds.x * cell + 1, bounds.y * cell + 1, bounds.width * cell - 2, bounds.height * cell - 2);
@@ -1035,10 +1047,11 @@ const shopRows = new Map();
 for (const kind of TOOL_KINDS) {
   const row = document.createElement('li'); row.className = 'shop-row'; row.dataset.kind = kind;
   const head = document.createElement('div'); head.className = 'shop-head';
+  const icon = toolIcon(kind, 26);
   const name = document.createElement('b'); name.className = 'shop-name'; name.textContent = TOOL_UI[kind].name;
   const price = document.createElement('span'); price.className = 'shop-price'; price.textContent = coinsText(PRICES[kind]);
   const stock = document.createElement('span'); stock.className = 'shop-stock';
-  head.append(name, price, stock);
+  head.append(icon, name, price, stock);
   const controls = document.createElement('div'); controls.className = 'shop-controls';
   const buy = document.createElement('button'); buy.type = 'button'; buy.className = 'secondary-button shop-buy';
   const take = document.createElement('div'); take.className = 'shop-take'; take.setAttribute('role', 'group'); take.setAttribute('aria-label', `Взяти в партію: ${TOOL_UI[kind].name.toLowerCase()}`);
@@ -1064,11 +1077,11 @@ for (const kind of TOOL_KINDS) {
 // Why one more charge of `kind` cannot be taken, as a short text, or '' when it can.
 function takeBlock(kind) {
   const have = picks[kind] ?? 0;
-  if (wallet.stock[kind] === 0) return 'Немає в запасі';
+  if (wallet.stock[kind] === 0) return 'Спершу купіть';
   if (have >= wallet.stock[kind]) return 'Весь запас взято';
   const plan = planLoadout(wallet, { ...picks, [kind]: have + 1 });
   if (plan.ok) return '';
-  return { 'too-many-kinds': `Не більше ${MAX_KINDS} видів`, 'too-many-charges': `Не більше ${MAX_CARRY} зарядів`, 'invalid-count': `Не більше ${MAX_CARRY} зарядів`, 'not-in-stock': 'Немає в запасі' }[plan.reason] ?? 'Недоступно';
+  return { 'too-many-kinds': `Не більше ${MAX_KINDS} видів`, 'too-many-charges': `Не більше ${MAX_CARRY} зарядів`, 'invalid-count': `Не більше ${MAX_CARRY} зарядів`, 'not-in-stock': 'Спершу купіть' }[plan.reason] ?? 'Недоступно';
 }
 function renderLoadout() {
   $('loadoutCoins').textContent = wallet.coins.toLocaleString('uk-UA');
@@ -1185,7 +1198,7 @@ const RESTORE_ERRORS = {
 };
 function setRestoreStatus(text, bad = false) { walletRestoreStatus.textContent = text; walletRestoreStatus.classList.toggle('bad', bad); }
 function walletPreviewText(next) {
-  return `Монети ${next.coins.toLocaleString('uk-UA')} · Молоток ${next.stock.hammer} · Стріла ${next.stock.arrow} · Пушка ${next.stock.cannon} · Молот по області ${next.stock.areaHammer}`;
+  return `Монети ${next.coins.toLocaleString('uk-UA')} · Молоток ${next.stock.hammer} · Стріла 2 ряди ${next.stock.arrow} · Гармата ${next.stock.cannon} · Молот по області ${next.stock.areaHammer}`;
 }
 function cancelPendingWallet() { pendingWallet = null; walletConfirm.hidden = true; }
 function resetWalletBackup() {

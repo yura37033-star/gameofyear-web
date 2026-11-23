@@ -1,4 +1,4 @@
-import { previewMovePath } from './core/game.mjs?v=arrow-icons-8ef53aa1f9';
+import { previewMovePath } from './core/game.mjs?v=balance3000-c324bf1e7a';
 
 const copyPieces = (pieces) => pieces.map((piece) => ({ ...piece, frame: { ...piece.frame }, cells: piece.cells.map((cell) => ({ ...cell })) }));
 const clamp = (value) => Math.max(0, Math.min(1, value));
@@ -21,6 +21,9 @@ export function buildPlayback(initialPieces, events) {
         phase.gain = event.gain ?? 0;
         // The removed cells (the arrow takes two rows, the cannon two columns, the area hammer a square): the fade follows this list.
         if (Array.isArray(event.cells)) phase.cells = event.cells.map(({ x, y }) => ({ x, y }));
+      }
+      if (event.type === 'double' && Array.isArray(event.sources)) {
+        phase.sources = event.sources.map(({ id, sourceId }) => ({ id, sourceId }));
       }
       if (event.type === 'rotate') {
         phase.pieceId = event.pieceId;
@@ -55,14 +58,19 @@ export function samplePieces(phase, progress) {
   }
   const old = new Map(phase.from.map((piece) => [piece.id, piece]));
   if (phase.type === 'double') {
-    // Existing pieces stay put; new copies grow and fade in from their source row below.
+    // Existing pieces stay put; each copy grows and fades in from its own source.
+    // Older one-row events have no source map and keep their original one-cell animation.
+    const sources = new Map((phase.sources ?? []).map(({ id, sourceId }) => [id, sourceId]));
     return phase.to.map((piece) => {
       const before = old.get(piece.id);
       if (before) return { ...piece, cells: piece.cells.map(({ x, y }) => ({ x, y, opacity: 1 })) };
       const amount = easeOut(t);
-      return { ...piece, cells: piece.cells.map(({ x, y }) => ({
-        x, y: y + (1 - amount), opacity: amount, scale: .6 + .4 * amount,
-      })) };
+      const source = old.get(sources.get(piece.id));
+      return { ...piece, cells: piece.cells.map(({ x, y }, index) => {
+        const start = source?.cells[index] ?? { x, y: y + 1 };
+        return { x: start.x + (x - start.x) * amount, y: start.y + (y - start.y) * amount,
+          opacity: amount, scale: .6 + .4 * amount };
+      }) };
     });
   }
   const amount = phase.type === 'fall' ? t * t : phase.type === 'rise' ? (1 - Math.cos(Math.PI * t)) / 2 : easeOut(t);

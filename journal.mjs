@@ -3,7 +3,7 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'arrow-icons-8ef53aa1f9';
+export const BUILD_ID = 'balance3000-c324bf1e7a';
 // Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
 const RAINBOW_COLOR = 'rainbow';
 // A game carries at most 6 charges of at most 2 kinds (DEMO_PLAN.md section 24), so a kind is used at most 6 times; the

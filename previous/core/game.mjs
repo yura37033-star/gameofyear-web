@@ -1,4 +1,4 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=tools-v2-97d156fe48';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=arrow-icons-8ef53aa1f9';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
@@ -10,9 +10,11 @@ export const MAX_TOOL_CARRY = 6;
 export const MAX_TOOL_KINDS = 2;
 export const TOOL_CHARGES = Object.freeze({ hammer: MAX_TOOL_CARRY, arrow: MAX_TOOL_CARRY, cannon: MAX_TOOL_CARRY, areaHammer: 3 });
 export const TOOL_CELL_POINTS = 10;
-// Tool effects (rules 6). The cannon removes CANNON_WIDTH neighbouring columns (the tap sets the left one); the area hammer removes
-// an AREA_SIZE x AREA_SIZE square (the tap sets its top-left cell). Near the right and bottom edges both shift inside the board.
+// Tool effects (rules 6, arrow rules 7). The cannon removes CANNON_WIDTH neighbouring columns (the tap sets the left one); the arrow
+// removes ARROW_HEIGHT neighbouring rows (rules 7; the tap sets the upper one, the row below goes with it); the area hammer removes
+// an AREA_SIZE x AREA_SIZE square (the tap sets its top-left cell). Near the right and bottom edges all of them shift inside the board.
 export const CANNON_WIDTH = 2;
+export const ARROW_HEIGHT = 2;
 export const AREA_SIZE = 3;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
@@ -1271,6 +1273,14 @@ export function cannonToolBounds(state, target) {
   return { x: Math.min(target, state.cols - CANNON_WIDTH), y: 0, width: CANNON_WIDTH, height: state.rows };
 }
 
+// Area of the arrow for a tapped row (rules 7): the upper row is shifted up on the last row so the pair stays inside the board.
+// null for a target that is not a row of the board.
+export function arrowToolBounds(state, target) {
+  if (!state || !Number.isInteger(state.cols) || !Number.isInteger(state.rows) || state.rows < ARROW_HEIGHT
+    || !Number.isInteger(target) || target < 0 || target >= state.rows) return null;
+  return { x: 0, y: Math.min(target, state.rows - ARROW_HEIGHT), width: state.cols, height: ARROW_HEIGHT };
+}
+
 // Area of the area hammer for a tapped cell index (y * cols + x): the top-left cell is shifted inside the board near the
 // right and bottom edges.
 export function areaToolBounds(state, target) {
@@ -1291,9 +1301,8 @@ export function toolTargetCells(state, kind, target) {
   if (kind === 'hammer') return findPiece(state, target)?.cells.map(cloneCell) ?? [];
   if (kind === 'areaHammer') return cellsInBounds(state, areaToolBounds(state, target));
   if (kind === 'cannon') return cellsInBounds(state, cannonToolBounds(state, target));
-  if (kind !== 'arrow') return [];
-  if (!Number.isInteger(target) || target < 0 || target >= state.rows) return [];
-  return state.pieces.flatMap((piece) => piece.cells.filter((cell) => cell.y === target)).map(cloneCell);
+  if (kind === 'arrow') return cellsInBounds(state, arrowToolBounds(state, target));
+  return [];
 }
 
 export function useHammer(state, pieceId) {
@@ -1324,6 +1333,7 @@ export function useTool(state, kind, target) {
     const bounds = areaToolBounds(state, target);
     actionTarget = bounds.y * state.cols + bounds.x; // the clamped top-left cell
   } else if (kind === 'cannon') actionTarget = cannonToolBounds(state, target).x; // the clamped left column
+  else if (kind === 'arrow') actionTarget = arrowToolBounds(state, target).y; // the clamped upper row
   const action = kind === 'hammer' ? { type: 'hammer', pieceId: target } : { type: 'tool', kind, target: actionTarget };
   addSnapshotEvent(events, { ...action, cells, gain }, pieces);
   const physics = resolvePhysics(pieces, state, events, idFactory.next);

@@ -1,4 +1,4 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=arrow-icons-8ef53aa1f9';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=balance3000-c324bf1e7a';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
 export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
@@ -18,10 +18,13 @@ export const ARROW_HEIGHT = 2;
 export const AREA_SIZE = 3;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
+// Rules 9: after the debut (two forced second-colour rows at COLOR_DEBUT_SCORE) an ordinary or rescue row is second-colour in 15% of
+// cases (it was 35%); the curve below COLOR_DEBUT_SCORE (10% up to 1000, rising to 35% at 2000, held up to 2999) is unchanged.
+const SECOND_COLOR_CHANCE_AFTER_DEBUT = 0.15;
 // Rainbow strip (DEMO_PLAN.md section 13). RAINBOW_COLOR is not a palette colour: it is a
 // wildcard value of segment/piece `color` and is never counted as a colour of its own.
 export const RAINBOW_COLOR = 'rainbow';
-export const RAINBOW_SCORE = 4000;
+export const RAINBOW_SCORE = 3000; // rules 9 (it was 4000): the first strip may appear in the first prepared row at or after 3000 points
 export const RAINBOW_CHANCE = 0.2;
 export const RAINBOW_WINDOW = 20; // at most RAINBOW_MAX_IN_WINDOW in any 20 consecutive prepared rows
 export const RAINBOW_MAX_IN_WINDOW = 3;
@@ -418,6 +421,7 @@ function fallbackStart(cols, rows, palette) {
 
 function secondColorChance(score, incomingTurn) {
   if (incomingTurn <= 4) return 0;
+  if (score >= COLOR_DEBUT_SCORE) return SECOND_COLOR_CHANCE_AFTER_DEBUT;
   if (score <= 1000) return 0.1;
   if (score >= 2000) return 0.35;
   return 0.1 + ((score - 1000) / 1000) * 0.25;
@@ -577,21 +581,35 @@ function updateDroughtCounters(nextState, startingState) {
   }
 }
 
-// Trial doubling: copies every piece of the single occupied row one row higher.
-// Deterministic (no RNG, no score); new ids come from the shared counter.
-function doubleSingleRow(state, nextId, events) {
-  const bottom = state.rows - 1;
-  const copies = state.pieces.map((piece) => ({
+// One floor layer means every remaining piece directly touches the bottom.
+// A vertical strip and a separate square are one layer even when their heights differ.
+function isSingleFloorLayer(state) {
+  return state.pieces.length > 0
+    && state.pieces.every((piece) => piece.cells.some((cell) => cell.y === state.rows - 1));
+}
+
+// Copy each piece immediately above itself, using its occupied height, not its rotation frame.
+// This is deterministic (no RNG or score); the originals and the reserved preview stay put.
+function doubleFloorLayer(state, nextId, events) {
+  if (!isSingleFloorLayer(state)) throw new Error('doubling requires one floor layer');
+  const originals = state.pieces;
+  const heights = originals.map((piece) => {
+    const ys = piece.cells.map((cell) => cell.y);
+    return Math.max(...ys) - Math.min(...ys) + 1;
+  });
+  const copies = originals.map((piece, index) => ({
     id: nextId(),
     color: piece.color,
-    cells: piece.cells.map(({ x, y }) => ({ x, y: y - 1 })),
-    frame: { ...piece.frame, y: piece.frame.y - 1 },
+    cells: translateCells(piece.cells, 0, -heights[index]),
+    frame: { ...piece.frame, y: piece.frame.y - heights[index] },
   }));
-  if (copies.some((piece) => piece.cells.some((cell) => cell.y !== bottom - 1))) {
-    throw new Error('doubling requires a single occupied row');
-  }
-  state.pieces = [...state.pieces, ...copies];
-  addSnapshotEvent(events, { type: 'double', rows: 1 }, state.pieces);
+  state.pieces = [...originals, ...copies];
+  // Keep the historical horizontal-row event unchanged. Taller copies need their
+  // source ids so playback starts on the full source piece instead of one cell below.
+  const sources = heights.some((height) => height > 1)
+    ? { sources: copies.map((piece, index) => ({ id: piece.id, sourceId: originals[index].id })) }
+    : {};
+  addSnapshotEvent(events, { type: 'double', rows: 1, ...sources }, state.pieces);
 }
 
 function topOccupied(pieces) {
@@ -1120,11 +1138,11 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
 
   let doubled = null;
   const settledStack = state.trial ? stackHeight(nextState.pieces, state.rows) : null;
-  if (settledStack === 1) {
+  if (state.trial && isSingleFloorLayer(nextState)) {
     // Trial doubling replaces this turn's rise: the preview, its RNG state and the
     // pause flags stay exactly as they were.
     const doubleIds = makeIdFactory(nextState._nextId);
-    doubleSingleRow(nextState, doubleIds.next, events);
+    doubleFloorLayer(nextState, doubleIds.next, events);
     nextState._nextId = doubleIds.value();
     nextState._witness = followingWitness
       ?? (prepareNext && refreshHeldWitness ? findHeldWitness(nextState) : null);
@@ -1155,7 +1173,7 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
     return { state: nextState, events: events ?? [], changed: true, reason: null };
   }
 
-  // One rise: shift up, insert `row`, settle, clear, then (trial) double a lone row.
+  // One rise: shift up, insert `row`, settle, clear, then (trial) double a lone floor layer.
   const rise = (row) => {
     nextState.pieces = nextState.pieces.map((piece) => ({
       ...piece,
@@ -1170,9 +1188,9 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
     nextState.score += postRisePhysics.score;
     nextState._nextId = postRiseIdFactory.value();
     if (state.trial) updateDroughtCounters(nextState, state);
-    if (state.trial && stackHeight(nextState.pieces, state.rows) === 1) {
+    if (state.trial && isSingleFloorLayer(nextState)) {
       const doubleIds = makeIdFactory(nextState._nextId);
-      doubleSingleRow(nextState, doubleIds.next, events);
+      doubleFloorLayer(nextState, doubleIds.next, events);
       nextState._nextId = doubleIds.value();
       doubled = 'after-rise';
     }
@@ -1180,7 +1198,7 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
       insertRowAtBottom(nextState, row);
       addSnapshotEvent(events, { type: 'refill', rows: 1 }, nextState.pieces);
       const refillIds = makeIdFactory(nextState._nextId);
-      doubleSingleRow(nextState, refillIds.next, events);
+      doubleFloorLayer(nextState, refillIds.next, events);
       nextState._nextId = refillIds.value();
       doubled = 'after-rise';
     }
@@ -1360,7 +1378,7 @@ export function useTool(state, kind, target) {
     insertRowAtBottom(nextState, state.nextRow);
     addSnapshotEvent(events, { type: 'refill', rows: 1 }, nextState.pieces);
     const doubleIds = makeIdFactory(nextState._nextId);
-    doubleSingleRow(nextState, doubleIds.next, events);
+    doubleFloorLayer(nextState, doubleIds.next, events);
     nextState._nextId = doubleIds.value();
     const random = createRandom(state._rng);
     const selection = selectTrialPreview(nextState, random);
