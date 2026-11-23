@@ -3,16 +3,18 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'tools-v2-97d156fe48';
+export const BUILD_ID = 'arrow-icons-8ef53aa1f9';
 // Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
 const RAINBOW_COLOR = 'rainbow';
 // A game carries at most 6 charges of at most 2 kinds (DEMO_PLAN.md section 24), so a kind is used at most 6 times; the
 // journal stays free of imports, so these numbers repeat MAX_TOOL_CARRY / MAX_TOOL_KINDS of core/game.mjs (a test keeps them equal).
-// cells = the most one use can remove on the 8 x 12 board: a piece, a row (8), two columns (2 x 12 = 24; rules 6, the older one-column
-// records hold at most 12) or a 3 x 3 square (9; the older 2 x 2 records hold at most 4).
-const TOOL_LIMITS = { hammer: { cells: 4, charges: 6 }, arrow: { cells: 8, charges: 6 }, cannon: { cells: 24, charges: 6 }, areaHammer: { cells: 9, charges: 3 } };
+// cells = the most one use can remove on the 8 x 12 board: a piece, two rows (2 x 8 = 16; rules 7, the older one-row records hold at
+// most 8), two columns (2 x 12 = 24; rules 6, the older one-column records hold at most 12) or a 3 x 3 square (9; the older 2 x 2
+// records hold at most 4).
+const TOOL_LIMITS = { hammer: { cells: 4, charges: 6 }, arrow: { cells: 16, charges: 6 }, cannon: { cells: 24, charges: 6 }, areaHammer: { cells: 9, charges: 3 } };
 const TOOL_ORDER = ['hammer', 'arrow', 'cannon', 'areaHammer'];
 const TOOL_LETTER = { hammer: 'H', arrow: 'A', cannon: 'C', areaHammer: 'Q' };
+const OLD_ARROW_CELLS = 8; // a one-row arrow record (rules 6 and older) removes at most one row of the 8 x 12 board
 const MAX_GAME_CHARGES = 6;
 const MAX_GAME_KINDS = 2;
 export const JOURNAL_CAPACITY = 5; // the game in progress plus up to four finished ones
@@ -169,6 +171,7 @@ export function recordTool(journal, { before, after, result } = {}) {
     kind,
     cells,
     ...(kind === 'hammer' ? {} : { target: strike.target }),
+    ...(kind === 'arrow' ? { span: 2 } : {}), // rules 7: the arrow took two rows from `target` down; records of older builds have no span
     score: after.score,
     gain: after.score - before.score,
     rows,
@@ -271,7 +274,7 @@ export function formatTurn(turn) {
 
 function formatTool(tool) {
   let target = `B${tool.n}`;
-  if (tool.kind === 'arrow') target = `A${tool.n} r${tool.target + 1}`;
+  if (tool.kind === 'arrow') target = `A${tool.n} r${tool.target + 1}${tool.span === 2 ? ' 2r' : ''}`; // 2r = the row and the one below it
   if (tool.kind === 'cannon') target = `C${tool.n} c${tool.target + 1}`;
   if (tool.kind === 'areaHammer') target = `Q${tool.n} r${Math.floor(tool.target / 8) + 1} c${tool.target % 8 + 1}`;
   return `${target} x${tool.cells} +${tool.gain} r${tool.rows} h${tool.hBefore}>${tool.hAfter}${tool.refill ? ' F' : ''}${tool.over ? ' X' : ''} left=${tool.remaining}`;
@@ -282,7 +285,10 @@ function reportLegend(games) {
   const tools = games.flatMap((game) => game.tools ?? []);
   const parts = [];
   if (tools.some((tool) => tool.kind === 'hammer')) parts.push('hammer B<n> x<cells>');
-  if (tools.some((tool) => tool.kind === 'arrow' || tool.kind === 'cannon')) parts.push('A<n> r<row>, C<n> c<left col> x<cells>');
+  // Two-row arrows (rules 7, span 2) name the upper row; one-row records of older builds keep the plain row.
+  if (tools.some((tool) => tool.kind === 'arrow' && tool.span === 2)) parts.push('A<n> r<top row> 2r x<cells>');
+  if (tools.some((tool) => tool.kind === 'arrow' && tool.span !== 2)) parts.push('A<n> r<row> x<cells>');
+  if (tools.some((tool) => tool.kind === 'cannon')) parts.push('C<n> c<left col> x<cells>');
   if (tools.some((tool) => tool.kind === 'areaHammer')) parts.push('Q<n> r<row> c<col> 3x3 x<cells>');
   let legend = LEGEND;
   if (parts.length) legend += ` | ${parts.join('; ')}; then +gain rN h<from>><to> F refill X over left=charges`;
@@ -395,18 +401,22 @@ function importTools(tools, legacyHammers, start = null) {
     const kind = legacy ? 'hammer' : entry?.kind;
     if (!Object.hasOwn(TOOL_LIMITS, kind) || !toolFits(accepted, kind, start)) return null;
     const fields = legacy ? ['pieceLength'] : kind === 'hammer' ? ['kind', 'cells'] : ['kind', 'cells', 'target'];
-    if (!onlyKeys(entry, [...baseKeys, ...fields])) return null;
+    // `span: 2` is the optional marker of a two-row arrow (rules 7); records of older builds have none.
+    const { span, ...plainEntry } = entry ?? {};
+    if (span !== undefined && (kind !== 'arrow' || span !== 2)) return null;
+    if (!onlyKeys(plainEntry, [...baseKeys, ...fields])) return null;
     if (!['n', 'score', 'gain', 'rows', 'hBefore', 'hAfter'].every((key) => isCount(entry[key]))) return null;
     const cells = legacy ? entry.pieceLength : entry.cells;
     const limits = TOOL_LIMITS[kind];
+    if (kind === 'arrow' && span === undefined && cells > OLD_ARROW_CELLS) return null;
     if (!isCount(cells, limits.cells) || cells === 0 || !isCount(entry.colors, 4) || !isCount(entry.remaining, limits.charges - 1)) return null;
     if (kind === 'areaHammer') {
       if (!isCount(entry.target, 86) || entry.target % 8 > 6) return null;
-    } else if (kind !== 'hammer' && !isCount(entry.target, kind === 'arrow' ? 11 : 7)) return null;
+    } else if (kind !== 'hammer' && !isCount(entry.target, kind === 'arrow' ? (span === 2 ? 10 : 11) : 7)) return null;
     if (typeof entry.refill !== 'boolean' || (entry.over !== null && !isText(entry.over, 24))) return null;
     if (accepted.length && entry.n < accepted.at(-1).n) return null;
-    const { pieceLength, ...fieldsWithoutLegacy } = entry;
-    accepted.push({ ...fieldsWithoutLegacy, kind, cells });
+    const { pieceLength, ...fieldsWithoutLegacy } = plainEntry;
+    accepted.push({ ...fieldsWithoutLegacy, kind, cells, ...(span === 2 ? { span } : {}) });
   }
   return accepted;
 }

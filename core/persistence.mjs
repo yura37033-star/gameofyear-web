@@ -8,16 +8,17 @@
 // continue differently. Explicit migrations preserve compatible records. The golden test
 // in tests/persistence.test.mjs detects changes in a game's continuation.
 //
-// Rules 4 (economy) added a payout marker; rules 5 added the area hammer tool; rules 6 changes tool effects (the cannon removes two
-// neighbouring columns, the area hammer a 3 x 3 square), which decides the future turns of a stored game. The rules-version bump keeps
-// older builds from loading a state they would continue differently. Versions 1-5 migrate without changing their saved game or payout marker.
+// Rules 4 (economy) added a payout marker; rules 5 added the area hammer tool; rules 6 changed tool effects (the cannon removes two
+// neighbouring columns, the area hammer a 3 x 3 square); rules 7 makes the arrow remove two neighbouring rows, which decides the
+// future turns of a stored game. The rules-version bump keeps older builds from loading a state they would continue differently.
+// Versions 1-6 migrate without changing their saved game or payout marker (a game keeps the charges it carries).
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   TOOL_CELL_POINTS, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece, validateToolSlots,
-} from './game.mjs?v=tools-v2-97d156fe48';
+} from './game.mjs?v=arrow-icons-8ef53aa1f9';
 
 export const SCHEMA_VERSION = 1;
-export const RULES_VERSION = 6;
+export const RULES_VERSION = 7;
 export const MAX_GAME_RECORD_BYTES = 64 * 1024;
 export const MAX_PIECES = 200;
 export const TRIAL_SIZE = Object.freeze({ cols: 8, rows: 12 });

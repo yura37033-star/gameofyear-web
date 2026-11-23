@@ -1,4 +1,4 @@
-import { previewMovePath } from './core/game.mjs?v=lamp-91fcf373ec';
+import { previewMovePath } from './core/game.mjs?v=tools-v2-97d156fe48';
 
 const copyPieces = (pieces) => pieces.map((piece) => ({ ...piece, frame: { ...piece.frame }, cells: piece.cells.map((cell) => ({ ...cell })) }));
 const clamp = (value) => Math.max(0, Math.min(1, value));
@@ -19,6 +19,8 @@ export function buildPlayback(initialPieces, events) {
         phase.kind = event.kind;
         phase.target = event.target;
         phase.gain = event.gain ?? 0;
+        // The removed cells (a cannon takes two columns, the area hammer a square): the fade follows this list.
+        if (Array.isArray(event.cells)) phase.cells = event.cells.map(({ x, y }) => ({ x, y }));
       }
       if (event.type === 'rotate') {
         phase.pieceId = event.pieceId;
@@ -42,10 +44,12 @@ export function samplePieces(phase, progress) {
   const t = clamp(progress);
   if (t === 1) return copyPieces(phase.to);
   if (phase.type === 'clear' || phase.type === 'hammer' || phase.type === 'tool') {
+    // A tool fades exactly the cells of its event; an event without a cell list falls back to the old row/column rule.
     const axis = phase.kind === 'arrow' ? 'y' : 'x';
+    const faded = phase.type === 'tool' && phase.cells ? new Set(phase.cells.map(({ x, y }) => `${x},${y}`)) : null;
     return phase.from.map((piece) => ({ ...piece, cells: piece.cells.map((cell) => {
       const removed = phase.type === 'hammer' ? piece.id === phase.pieceId
-        : phase.type === 'tool' ? cell[axis] === phase.target : phase.rows.includes(cell.y);
+        : phase.type === 'tool' ? (faded ? faded.has(`${cell.x},${cell.y}`) : cell[axis] === phase.target) : phase.rows.includes(cell.y);
       return { ...cell, opacity: removed ? 1 - easeOut(t) : 1, scale: removed ? 1 - .3 * t : 1 };
     }) }));
   }

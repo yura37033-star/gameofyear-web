@@ -3,12 +3,14 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'lamp-91fcf373ec';
+export const BUILD_ID = 'tools-v2-97d156fe48';
 // Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
 const RAINBOW_COLOR = 'rainbow';
 // A game carries at most 6 charges of at most 2 kinds (DEMO_PLAN.md section 24), so a kind is used at most 6 times; the
 // journal stays free of imports, so these numbers repeat MAX_TOOL_CARRY / MAX_TOOL_KINDS of core/game.mjs (a test keeps them equal).
-const TOOL_LIMITS = { hammer: { cells: 4, charges: 6 }, arrow: { cells: 8, charges: 6 }, cannon: { cells: 12, charges: 6 }, areaHammer: { cells: 4, charges: 3 } };
+// cells = the most one use can remove on the 8 x 12 board: a piece, a row (8), two columns (2 x 12 = 24; rules 6, the older one-column
+// records hold at most 12) or a 3 x 3 square (9; the older 2 x 2 records hold at most 4).
+const TOOL_LIMITS = { hammer: { cells: 4, charges: 6 }, arrow: { cells: 8, charges: 6 }, cannon: { cells: 24, charges: 6 }, areaHammer: { cells: 9, charges: 3 } };
 const TOOL_ORDER = ['hammer', 'arrow', 'cannon', 'areaHammer'];
 const TOOL_LETTER = { hammer: 'H', arrow: 'A', cannon: 'C', areaHammer: 'Q' };
 const MAX_GAME_CHARGES = 6;
@@ -280,8 +282,8 @@ function reportLegend(games) {
   const tools = games.flatMap((game) => game.tools ?? []);
   const parts = [];
   if (tools.some((tool) => tool.kind === 'hammer')) parts.push('hammer B<n> x<cells>');
-  if (tools.some((tool) => tool.kind === 'arrow' || tool.kind === 'cannon')) parts.push('A<n> r<row>, C<n> c<col> x<cells>');
-  if (tools.some((tool) => tool.kind === 'areaHammer')) parts.push('Q<n> r<row> c<col> 2x2 x<cells>');
+  if (tools.some((tool) => tool.kind === 'arrow' || tool.kind === 'cannon')) parts.push('A<n> r<row>, C<n> c<left col> x<cells>');
+  if (tools.some((tool) => tool.kind === 'areaHammer')) parts.push('Q<n> r<row> c<col> 3x3 x<cells>');
   let legend = LEGEND;
   if (parts.length) legend += ` | ${parts.join('; ')}; then +gain rN h<from>><to> F refill X over left=charges`;
   const notes = [];

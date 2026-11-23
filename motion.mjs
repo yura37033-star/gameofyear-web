@@ -1,4 +1,4 @@
-import { previewMovePath } from './core/game.mjs?v=tools-v2-97d156fe48';
+import { previewMovePath } from './core/game.mjs?v=arrow-icons-8ef53aa1f9';
 
 const copyPieces = (pieces) => pieces.map((piece) => ({ ...piece, frame: { ...piece.frame }, cells: piece.cells.map((cell) => ({ ...cell })) }));
 const clamp = (value) => Math.max(0, Math.min(1, value));
@@ -19,7 +19,7 @@ export function buildPlayback(initialPieces, events) {
         phase.kind = event.kind;
         phase.target = event.target;
         phase.gain = event.gain ?? 0;
-        // The removed cells (a cannon takes two columns, the area hammer a square): the fade follows this list.
+        // The removed cells (the arrow takes two rows, the cannon two columns, the area hammer a square): the fade follows this list.
         if (Array.isArray(event.cells)) phase.cells = event.cells.map(({ x, y }) => ({ x, y }));
       }
       if (event.type === 'rotate') {
@@ -44,7 +44,7 @@ export function samplePieces(phase, progress) {
   const t = clamp(progress);
   if (t === 1) return copyPieces(phase.to);
   if (phase.type === 'clear' || phase.type === 'hammer' || phase.type === 'tool') {
-    // A tool fades exactly the cells of its event; an event without a cell list falls back to the old row/column rule.
+    // A tool fades exactly the cells of its event; an event without a cell list (never produced by the core) falls back to the old single row/column rule.
     const axis = phase.kind === 'arrow' ? 'y' : 'x';
     const faded = phase.type === 'tool' && phase.cells ? new Set(phase.cells.map(({ x, y }) => `${x},${y}`)) : null;
     return phase.from.map((piece) => ({ ...piece, cells: piece.cells.map((cell) => {

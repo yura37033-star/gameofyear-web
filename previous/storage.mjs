@@ -13,6 +13,10 @@ export const RULES_V3_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.
 export const RULES_V4_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.economy.v4', journal: 'kr.journal.economy.v4' });
 // Area hammer (rules 5): preserve the older game and wallet keys for the published economy build.
 export const RULES_V5_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.area.v5', journal: 'kr.journal.area.v5' });
+// Tools v2 (rules 6): the cannon removes two columns and the area hammer a 3 x 3 square. The published rules-5 build reads the
+// version-5 keys and would reject a rulesVersion 6 record, so games and journals move to new keys. The page reads v6, then v5, v4, v3,
+// v2, hammer and legacy; older keys are never deleted.
+export const RULES_V6_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.reach.v6', journal: 'kr.journal.reach.v6' });
 export const LEGACY_WALLET_STORAGE_KEY = 'kr.wallet.v1';
 export const WALLET_STORAGE_KEY = 'kr.wallet.v2';
 export const STORAGE_LIMITS = Object.freeze({
@@ -31,6 +35,8 @@ export const STORAGE_LIMITS = Object.freeze({
   'kr.wallet.v2': 1024,
   'kr.game.area.v5': 64 * 1024,
   'kr.journal.area.v5': 600 * 1024,
+  'kr.game.reach.v6': 64 * 1024,
+  'kr.journal.reach.v6': 600 * 1024,
 });
 const PROBE_KEY = 'kr.probe';
 const DEFAULT_LIMIT = 64 * 1024;
