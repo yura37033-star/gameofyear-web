@@ -229,3 +229,10 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
 .rules .help-tools li>span:last-child{font-size:12px;line-height:1.5;color:#99aecb;padding-top:2px}
 .rules .help-tools b{color:#e4edfb}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+/* Field presets: native picker, a separate personal record, shared wallet below. */
+.field-choice{margin:12px 0;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:#ffffff05}
+.field-choice label{display:block;margin-bottom:6px;font-size:12px;font-weight:650;color:#c4d3ea}
+.field-choice select{display:block;width:100%;min-height:44px;padding:9px 12px;font:inherit;font-size:16px;color:var(--ink);background:#14233b;border:1px solid #7896bc55;border-radius:8px;touch-action:manipulation}
+.field-choice select:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.field-choice p{margin:6px 0 0!important;font-size:11px!important;line-height:1.4!important;color:#9eb1cf!important}

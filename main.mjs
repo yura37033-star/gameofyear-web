@@ -1,10 +1,11 @@
-import { FIELD_SIZES, DEFAULT_FIELD, fieldById, fieldForSize, bestKeyForSize } from './core/fields.mjs?v=fields-fd5f91727c';
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=fields-fd5f91727c';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=fields-fd5f91727c';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=fields-fd5f91727c';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=fields-fd5f91727c';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=fields-fd5f91727c';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS, RULES_V8_STORAGE_KEYS, RULES_V9_STORAGE_KEYS, RULES_V10_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=fields-fd5f91727c';
+import { FIELD_SIZES, DEFAULT_FIELD, fieldById, fieldForSize, bestKeyForSize } from './core/fields.mjs?v=offline-e1b9594661';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=offline-e1b9594661';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=offline-e1b9594661';
+import { initOffline } from './offline.mjs?v=offline-e1b9594661';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=offline-e1b9594661';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=offline-e1b9594661';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=offline-e1b9594661';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS, RULES_V8_STORAGE_KEYS, RULES_V9_STORAGE_KEYS, RULES_V10_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=offline-e1b9594661';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -1302,3 +1303,4 @@ $('helpDialog').addEventListener('click', (e) => { if (e.target === $('helpDialo
 new ResizeObserver(resize).observe(playArea);
 new ResizeObserver(() => fitHud(true)).observe(hud);
 await initGame();
+initOffline({ onReady: () => { $('offlineStatus').hidden = false; } });

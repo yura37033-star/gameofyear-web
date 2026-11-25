@@ -11,7 +11,7 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23101c31'/%3E%3Cpath d='M7 7h8v8H7z' fill='%235D8FE8'/%3E%3Cpath d='M17 7h8v8h-8z' fill='%23F3C969'/%3E%3Cpath d='M7 17h8v8H7z' fill='%23F3C969'/%3E%3Cpath d='M17 17h8v8h-8z' fill='%235D8FE8'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=balance3000-c324bf1e7a">
+  <link rel="stylesheet" href="./styles.css?v=fields-fd5f91727c">
 </head>
 <body>
   <main class="layout">
@@ -42,7 +42,7 @@
           <div><span class="label">ОЧКИ<span id="best" class="best" aria-label="Рекорд">Рекорд 0</span></span><strong id="score">0</strong></div>
           <div class="turn-card"><span class="label">ХОДІВ</span><b id="turn">0</b></div>
           <div class="coin-card"><span class="label">МОНЕТИ</span><b id="coins">0</b></div>
-          <div class="field-badge">8 <span>×</span> 12</div>
+          <div id="fieldBadge" class="field-badge" aria-label="Розмір поля">8 × 12</div>
         </div>
       </div>
 
@@ -138,6 +138,11 @@
     <div class="confirm-card shop-card">
       <h2 id="loadoutTitle">Підготовка</h2>
       <p id="loadoutNotice" class="loadout-notice" role="status" hidden></p>
+      <div class="field-choice">
+        <label for="fieldSize">Розмір поля</label>
+        <select id="fieldSize" aria-describedby="fieldRecord"></select>
+        <p id="fieldRecord" role="status" aria-live="polite">Рекорд цього поля: 0</p>
+      </div>
       <p class="shop-coins">Монети: <strong id="loadoutCoins">0</strong></p>
       <ul id="loadoutList" class="shop-list"></ul>
       <p id="loadoutSummary" class="loadout-summary" role="status" aria-live="polite">Взято 0 з 6, видів 0 з 2</p>
@@ -166,6 +171,6 @@
       </details>
     </div>
   </dialog>
-  <script type="module" src="./main.mjs?v=balance3000-c324bf1e7a"></script>
+  <script type="module" src="./main.mjs?v=fields-fd5f91727c"></script>
 </body>
 </html>

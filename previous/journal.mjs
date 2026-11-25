@@ -3,8 +3,10 @@
 // The journal lives outside the core. It never mutates its inputs and keeps only
 // primitive values derived from them, so it cannot perturb the game.
 
-export const BUILD_ID = 'balance3000-c324bf1e7a';
-// Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal stays free of imports.
+import { DEFAULT_FIELD, fieldForMode } from './core/fields.mjs?v=fields-fd5f91727c';
+
+export const BUILD_ID = 'fields-fd5f91727c';
+// Same value as RAINBOW_COLOR in core/game.mjs (a test keeps them equal); the journal only imports pure field data.
 const RAINBOW_COLOR = 'rainbow';
 // A game carries at most 6 charges of at most 2 kinds (DEMO_PLAN.md section 24), so a kind is used at most 6 times; the
 // journal stays free of imports, so these numbers repeat MAX_TOOL_CARRY / MAX_TOOL_KINDS of core/game.mjs (a test keeps them equal).
@@ -12,6 +14,8 @@ const RAINBOW_COLOR = 'rainbow';
 // most 8), two columns (2 x 12 = 24; rules 6, the older one-column records hold at most 12) or a 3 x 3 square (9; the older 2 x 2
 // records hold at most 4).
 const TOOL_LIMITS = { hammer: { cells: 4, charges: 6 }, arrow: { cells: 16, charges: 6 }, cannon: { cells: 24, charges: 6 }, areaHammer: { cells: 9, charges: 3 } };
+// Use actual dimensions when recording and the mode when importing/reporting; unspecified old modes retain 8 x 12.
+function cellLimit(kind, size) { return kind === 'arrow' ? size.cols * 2 : kind === 'cannon' ? size.rows * 2 : TOOL_LIMITS[kind].cells; }
 const TOOL_ORDER = ['hammer', 'arrow', 'cannon', 'areaHammer'];
 const TOOL_LETTER = { hammer: 'H', arrow: 'A', cannon: 'C', areaHammer: 'Q' };
 const OLD_ARROW_CELLS = 8; // a one-row arrow record (rules 6 and older) removes at most one row of the 8 x 12 board
@@ -159,7 +163,7 @@ export function recordTool(journal, { before, after, result } = {}) {
   if (!Object.hasOwn(TOOL_LIMITS, kind) || !Array.isArray(strike.cells)) return null;
   const cells = strike.cells.length;
   const remaining = after.tools?.find((slot) => slot.kind === kind)?.charges;
-  if (!isCount(remaining, TOOL_LIMITS[kind].charges - 1) || cells < 1 || cells > TOOL_LIMITS[kind].cells) return null;
+  if (!isCount(remaining, TOOL_LIMITS[kind].charges - 1) || cells < 1 || cells > cellLimit(kind, before)) return null;
   if (before.tools?.find((slot) => slot.kind === kind)?.charges !== remaining + 1) return null; // exactly one charge was spent
   if (!toolFits(game.tools ?? [], kind, decodeStartSet(game.st))) return null;
 
@@ -272,11 +276,11 @@ export function formatTurn(turn) {
   ].join(' ');
 }
 
-function formatTool(tool) {
+function formatTool(tool, cols = DEFAULT_FIELD.cols) {
   let target = `B${tool.n}`;
   if (tool.kind === 'arrow') target = `A${tool.n} r${tool.target + 1}${tool.span === 2 ? ' 2r' : ''}`; // 2r = the row and the one below it
   if (tool.kind === 'cannon') target = `C${tool.n} c${tool.target + 1}`;
-  if (tool.kind === 'areaHammer') target = `Q${tool.n} r${Math.floor(tool.target / 8) + 1} c${tool.target % 8 + 1}`;
+  if (tool.kind === 'areaHammer') target = `Q${tool.n} r${Math.floor(tool.target / cols) + 1} c${tool.target % cols + 1}`;
   return `${target} x${tool.cells} +${tool.gain} r${tool.rows} h${tool.hBefore}>${tool.hAfter}${tool.refill ? ' F' : ''}${tool.over ? ' X' : ''} left=${tool.remaining}`;
 }
 
@@ -307,7 +311,7 @@ function reportActions(game) {
     const turn = game.turns[turnIndex];
     const tool = tools[toolIndex];
     if (tool && (!turn || tool.n < turn.n)) {
-      lines.push(formatTool(tool));
+      lines.push(formatTool(tool, (fieldForMode(game.mode) ?? DEFAULT_FIELD).cols));
       toolIndex += 1;
     } else {
       lines.push(formatTurn(turn));
@@ -390,7 +394,7 @@ function toolFits(entries, kind, start = null) {
   return start === null || used < (start[kind] ?? 0);
 }
 
-function importTools(tools, legacyHammers, start = null) {
+function importTools(tools, legacyHammers, start = null, size = DEFAULT_FIELD) {
   const legacy = legacyHammers !== undefined;
   if (legacy && tools !== undefined) return null;
   const source = legacy ? legacyHammers : tools;
@@ -409,10 +413,11 @@ function importTools(tools, legacyHammers, start = null) {
     const cells = legacy ? entry.pieceLength : entry.cells;
     const limits = TOOL_LIMITS[kind];
     if (kind === 'arrow' && span === undefined && cells > OLD_ARROW_CELLS) return null;
-    if (!isCount(cells, limits.cells) || cells === 0 || !isCount(entry.colors, 4) || !isCount(entry.remaining, limits.charges - 1)) return null;
+    if (!isCount(cells, cellLimit(kind, size)) || cells === 0 || !isCount(entry.colors, 4) || !isCount(entry.remaining, limits.charges - 1)) return null;
     if (kind === 'areaHammer') {
-      if (!isCount(entry.target, 86) || entry.target % 8 > 6) return null;
-    } else if (kind !== 'hammer' && !isCount(entry.target, kind === 'arrow' ? (span === 2 ? 10 : 11) : 7)) return null;
+      // Old 2 x 2 hits allow an anchor one cell nearer the edge than a current 3 x 3 hit.
+      if (!isCount(entry.target, (size.rows - 2) * size.cols + size.cols - 2) || entry.target % size.cols > size.cols - 2) return null;
+    } else if (kind !== 'hammer' && !isCount(entry.target, kind === 'arrow' ? size.rows - (span === 2 ? 2 : 1) : size.cols - 1)) return null;
     if (typeof entry.refill !== 'boolean' || (entry.over !== null && !isText(entry.over, 24))) return null;
     if (accepted.length && entry.n < accepted.at(-1).n) return null;
     const { pieceLength, ...fieldsWithoutLegacy } = plainEntry;
@@ -438,7 +443,7 @@ function importGame(game) {
   // `st` (start set, e.g. 'H3A2') is optional: journals saved before the economy have none.
   const start = st === undefined ? null : decodeStartSet(st);
   if (st !== undefined && start === null) return null;
-  const importedTools = tools !== undefined || hammers !== undefined ? importTools(tools, hammers, start) : undefined;
+  const importedTools = tools !== undefined || hammers !== undefined ? importTools(tools, hammers, start, fieldForMode(game.mode) ?? DEFAULT_FIELD) : undefined;
   if (importedTools === null) return null;
   let end = null;
   if (game.end !== null) {
