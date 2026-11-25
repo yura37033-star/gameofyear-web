@@ -11,14 +11,19 @@
 // Rules 4 (economy) added a payout marker; rules 5 added the area hammer tool; rules 6 changed tool effects (the cannon removes two
 // neighbouring columns, the area hammer a 3 x 3 square); rules 7 makes the arrow remove two neighbouring rows, which decides the
 // future turns of a stored game. The rules-version bump keeps older builds from loading a state they would continue differently.
-// Versions 1-6 migrate without changing their saved game or payout marker (a game keeps the charges it carries).
+// Rules 8 doubles a floor layer even when it includes vertical strips. Rules 9 lowers the second-colour share after the debut
+// (3000 points) to 15% and lets the rainbow strip appear from 3000 points instead of 4000. Versions 1-8 migrate with their
+// pieces, score, shown row, counters, tool charges and payout marker preserved; an old hint is dropped only when it no longer replays.
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   TOOL_CELL_POINTS, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece, validateToolSlots,
-} from './game.mjs?v=arrow-icons-8ef53aa1f9';
+} from './game.mjs?v=balance3000-c324bf1e7a';
 
 export const SCHEMA_VERSION = 1;
-export const RULES_VERSION = 7;
+export const RULES_VERSION = 9;
+// Before rules 9 the first rainbow strip needed 4000 points; a record of an older version must still satisfy that rule.
+const RAINBOW_SCORE_BEFORE_RULES_9 = 4000;
+const rainbowScoreFor = (version) => (version >= 9 ? RAINBOW_SCORE : RAINBOW_SCORE_BEFORE_RULES_9);
 export const MAX_GAME_RECORD_BYTES = 64 * 1024;
 export const MAX_PIECES = 200;
 export const TRIAL_SIZE = Object.freeze({ cols: 8, rows: 12 });
@@ -310,7 +315,7 @@ function validateWitness(witness, context) {
 
 // The continuation counters must follow from the state's own: a reserved row is the one already shown, a generated row
 // is one more prepared row that either carries a strip (and is then the newest appearance) or leaves them as they are.
-function checkWitnessRainbow(state, witness) {
+function checkWitnessRainbow(state, witness, version) {
   const { _rowsPrepared: prepared, _rainbowRows: recent } = state;
   const generated = witness.continuationMode === 'generated';
   need(witness.continuationRowsPrepared === prepared + (generated ? 1 : 0), 'witness-rainbow-counters');
@@ -320,7 +325,7 @@ function checkWitnessRainbow(state, witness) {
   need(witness.continuationRainbowFirstDone === (state._rainbowFirstDone || expected.length > 0), 'witness-rainbow-counters');
   need(!placed || witness.continuationKind === 'regular', 'witness-rainbow-counters');
   need(!placed || witness.continuationRainbowRows.at(-1) === witness.continuationRowsPrepared - 1, 'witness-rainbow-counters');
-  if (placed) need(state.score >= RAINBOW_SCORE, 'witness-rainbow-score');
+  if (placed) need(state.score >= rainbowScoreFor(version), 'witness-rainbow-score');
 }
 
 function actionFromSignature(state, signature) {
@@ -451,7 +456,7 @@ function validateState(raw, version) {
     }, '');
     const hasRainbow = pieces.some((piece) => piece.color === RAINBOW_COLOR) || rowHasRainbow(nextRow);
     need(!hasRainbow || counters.firstDone, 'rainbow-first');
-    need(!counters.firstDone || raw.score >= RAINBOW_SCORE, 'rainbow-score');
+    need(!counters.firstDone || raw.score >= rainbowScoreFor(version), 'rainbow-score');
     // The shown row is always the newest prepared row, so a strip in it is the newest appearance.
     need(!rowHasRainbow(nextRow) || (raw.nextRowKind === 'regular' && counters.rainbowRows.at(-1) === counters.rowsPrepared - 1), 'rainbow-next-row');
     state._rowsPrepared = counters.rowsPrepared;
@@ -467,11 +472,13 @@ function validateState(raw, version) {
     });
     if (state._witness?.steps === 2) {
       need(state._witness.continuationDebutRowsReserved === 0 || raw.score >= COLOR_DEBUT_SCORE, 'witness-debut-score');
-      checkWitnessRainbow(state, state._witness);
+      checkWitnessRainbow(state, state._witness, version);
     }
     if (state.status === 'playing' && !witnessReplays(state)) {
-      // After the rainbow unlock, the new clearing rule can invalidate a v1 hint.
-      need(version === 1 && state.score >= RAINBOW_SCORE, 'witness-replay');
+      // Older rules can plan a rise where rules 8 now doubles a floor layer, and rules 8 hints were searched with the old
+      // second-colour share and rainbow threshold (a continuation row generated at 3000+ points differs under rules 9).
+      // Keep the game; a stale, structurally valid hint must not reject an older save.
+      need(version < RULES_VERSION, 'witness-replay');
       state._witness = null;
     }
   } else {

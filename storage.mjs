@@ -27,10 +27,15 @@ export const RULES_V8_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.
 // Balance 3000+ (rules 9): second colour 15% after the debut and the rainbow strip from 3000 points. The published rules-7 page and any
 // rules-8 build keep reading their own keys. Read v9 first, then v8, v7 and all older keys; never delete them.
 export const RULES_V9_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.balance.v9', journal: 'kr.journal.balance.v9' });
+// Fields (rules 10): one active game across the presets; only personal records are per field.
+// Keep every previous game/journal key intact for rollback. The small-field best keeps kr.best.
+export const RULES_V10_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.fields.v10', journal: 'kr.journal.fields.v10' });
 export const LEGACY_WALLET_STORAGE_KEY = 'kr.wallet.v1';
 export const WALLET_STORAGE_KEY = 'kr.wallet.v2';
 export const STORAGE_LIMITS = Object.freeze({
   'kr.best': 1024,
+  'kr.best.10x15': 1024,
+  'kr.best.12x18': 1024,
   'kr.game': 64 * 1024,
   'kr.journal': 600 * 1024,
   'kr.game.hammer': 64 * 1024,
@@ -53,6 +58,8 @@ export const STORAGE_LIMITS = Object.freeze({
   'kr.journal.layer.v8': 600 * 1024,
   'kr.game.balance.v9': 64 * 1024,
   'kr.journal.balance.v9': 600 * 1024,
+  'kr.game.fields.v10': 64 * 1024,
+  'kr.journal.fields.v10': 600 * 1024,
 });
 const PROBE_KEY = 'kr.probe';
 const DEFAULT_LIMIT = 64 * 1024;

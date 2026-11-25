@@ -21,6 +21,12 @@ export const RULES_V6_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.
 // and would reject a rulesVersion 7 record, so games and journals move to new keys. The page reads v7, then v6, v5, v4, v3, v2,
 // hammer and legacy; older keys are never deleted.
 export const RULES_V7_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.arrow.v7', journal: 'kr.journal.arrow.v7' });
+// Floor-layer doubling (rules 8): use separate keys so the published rules-7 page
+// can still read its own saves. Read v8 first, then v7 and all older keys; never delete them.
+export const RULES_V8_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.layer.v8', journal: 'kr.journal.layer.v8' });
+// Balance 3000+ (rules 9): second colour 15% after the debut and the rainbow strip from 3000 points. The published rules-7 page and any
+// rules-8 build keep reading their own keys. Read v9 first, then v8, v7 and all older keys; never delete them.
+export const RULES_V9_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.balance.v9', journal: 'kr.journal.balance.v9' });
 export const LEGACY_WALLET_STORAGE_KEY = 'kr.wallet.v1';
 export const WALLET_STORAGE_KEY = 'kr.wallet.v2';
 export const STORAGE_LIMITS = Object.freeze({
@@ -43,6 +49,10 @@ export const STORAGE_LIMITS = Object.freeze({
   'kr.journal.reach.v6': 600 * 1024,
   'kr.game.arrow.v7': 64 * 1024,
   'kr.journal.arrow.v7': 600 * 1024,
+  'kr.game.layer.v8': 64 * 1024,
+  'kr.journal.layer.v8': 600 * 1024,
+  'kr.game.balance.v9': 64 * 1024,
+  'kr.journal.balance.v9': 600 * 1024,
 });
 const PROBE_KEY = 'kr.probe';
 const DEFAULT_LIMIT = 64 * 1024;

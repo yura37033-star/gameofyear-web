@@ -14,18 +14,20 @@
 // Rules 8 doubles a floor layer even when it includes vertical strips. Rules 9 lowers the second-colour share after the debut
 // (3000 points) to 15% and lets the rainbow strip appear from 3000 points instead of 4000. Versions 1-8 migrate with their
 // pieces, score, shown row, counters, tool charges and payout marker preserved; an old hint is dropped only when it no longer replays.
+import { FIELD_SIZES, fieldForSize } from './fields.mjs?v=fields-fd5f91727c';
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   TOOL_CELL_POINTS, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece, validateToolSlots,
-} from './game.mjs?v=balance3000-c324bf1e7a';
+} from './game.mjs?v=fields-fd5f91727c';
 
 export const SCHEMA_VERSION = 1;
-export const RULES_VERSION = 9;
+// Rules 10 adds approved field sizes and separate save keys; rules-9 gameplay is unchanged.
+export const RULES_VERSION = 10;
 // Before rules 9 the first rainbow strip needed 4000 points; a record of an older version must still satisfy that rule.
 const RAINBOW_SCORE_BEFORE_RULES_9 = 4000;
 const rainbowScoreFor = (version) => (version >= 9 ? RAINBOW_SCORE : RAINBOW_SCORE_BEFORE_RULES_9);
 export const MAX_GAME_RECORD_BYTES = 64 * 1024;
-export const MAX_PIECES = 200;
+export const MAX_PIECES = Math.max(200, ...FIELD_SIZES.map(({ cols, rows }) => cols * rows));
 export const TRIAL_SIZE = Object.freeze({ cols: 8, rows: 12 });
 export const CLASSIC_SIZE = Object.freeze({ cols: 10, rows: 20 });
 const MAX_PIECE_CELLS = 4;
@@ -398,8 +400,8 @@ function validateState(raw, version) {
       'skipNextRise', 'skipRiseUsed', '_trialColor', '_rng', '_nextId',
       ...(trial ? ['_debutRowsReserved', '_droughtTurns', '_droughtRescueIssued', '_witness', ...(oldRules ? [] : ['tools'])] : [])],
     trial ? ['_rowsPrepared', '_rainbowRows', '_rainbowFirstDone', ...(oldRules ? ['hammersRemaining'] : [])] : ['_witness']);
-  const size = trial ? TRIAL_SIZE : CLASSIC_SIZE;
-  need(raw.cols === size.cols && raw.rows === size.rows, 'size');
+  const size = trial && version >= 10 ? fieldForSize(raw.cols, raw.rows) : (trial ? TRIAL_SIZE : CLASSIC_SIZE);
+  need(size !== null && raw.cols === size.cols && raw.rows === size.rows, 'size');
   const { cols, rows } = size;
   need(Array.isArray(raw.palette) && raw.palette.length >= 2 && raw.palette.length <= 4, 'palette');
   need(raw.palette.every((color) => typeof color === 'string' && COLOR_PATTERN.test(color)), 'palette-color');
@@ -478,7 +480,8 @@ function validateState(raw, version) {
       // Older rules can plan a rise where rules 8 now doubles a floor layer, and rules 8 hints were searched with the old
       // second-colour share and rainbow threshold (a continuation row generated at 3000+ points differs under rules 9).
       // Keep the game; a stale, structurally valid hint must not reject an older save.
-      need(version < RULES_VERSION, 'witness-replay');
+      // Field profiles do not alter future turns. A false rules-9 hint is still rejected.
+      need(version < 9, 'witness-replay');
       state._witness = null;
     }
   } else {

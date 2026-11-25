@@ -1,9 +1,9 @@
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=arrow-icons-8ef53aa1f9';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=arrow-icons-8ef53aa1f9';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=arrow-icons-8ef53aa1f9';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=arrow-icons-8ef53aa1f9';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=arrow-icons-8ef53aa1f9';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=arrow-icons-8ef53aa1f9';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=balance3000-c324bf1e7a';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=balance3000-c324bf1e7a';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=balance3000-c324bf1e7a';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=balance3000-c324bf1e7a';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=balance3000-c324bf1e7a';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS, RULES_V8_STORAGE_KEYS, RULES_V9_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=balance3000-c324bf1e7a';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -125,7 +125,7 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const keys = [STORAGE_KEYS[slot], RULES_V6_STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  const keys = [STORAGE_KEYS[slot], RULES_V8_STORAGE_KEYS[slot], RULES_V7_STORAGE_KEYS[slot], RULES_V6_STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
   for (let index = 0; index < keys.length; index += 1) {
     const stored = await storage.load(keys[index]);
     if (stored.reason === 'missing') continue;

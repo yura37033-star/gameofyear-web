@@ -1,9 +1,10 @@
-import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=balance3000-c324bf1e7a';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=balance3000-c324bf1e7a';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=balance3000-c324bf1e7a';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=balance3000-c324bf1e7a';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=balance3000-c324bf1e7a';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS, RULES_V8_STORAGE_KEYS, RULES_V9_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=balance3000-c324bf1e7a';
+import { FIELD_SIZES, DEFAULT_FIELD, fieldById, fieldForSize, bestKeyForSize } from './core/fields.mjs?v=fields-fd5f91727c';
+import { COLOR_DEBUT_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=fields-fd5f91727c';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=fields-fd5f91727c';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=fields-fd5f91727c';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=fields-fd5f91727c';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=fields-fd5f91727c';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS, RULES_V8_STORAGE_KEYS, RULES_V9_STORAGE_KEYS, RULES_V10_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=fields-fd5f91727c';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -83,6 +84,22 @@ function journalRecord(before, result) {
 // Two tabs share one store: the last write wins (no cross-tab merging). Every call is wrapped so storage can never break the game.
 const STORAGE_NOTICE = 'Прогрес цього запуску не збережеться.';
 let best = 0, bestAtStart = 0, recordBase = 0, storageNoticePending = false, storageNoticeShown = false;
+const bestByKey = new Map(FIELD_SIZES.map(({ bestKey }) => [bestKey, 0]));
+let pendingField = DEFAULT_FIELD;
+const fieldSize = $('fieldSize'), fieldRecord = $('fieldRecord');
+for (const field of FIELD_SIZES) {
+  const option = document.createElement('option'); option.value = field.id;
+  option.textContent = `${field.name} · ${field.cols} × ${field.rows}`; fieldSize.append(option);
+}
+function activeBestKey() { return state ? bestKeyForSize(state.cols, state.rows) : DEFAULT_FIELD.bestKey; }
+function renderFieldChoice() {
+  fieldSize.value = pendingField.id;
+  fieldRecord.textContent = `Рекорд цього поля: ${(bestByKey.get(pendingField.bestKey) ?? 0).toLocaleString('uk-UA')}`;
+}
+fieldSize.addEventListener('change', () => {
+  if (!loadoutBox.open) return;
+  pendingField = fieldById(fieldSize.value) ?? DEFAULT_FIELD; renderFieldChoice();
+});
 // Economy (package B): the wallet is the player's, not the game's. `paidCoins` is null until the current game has been paid
 // out (a loss or a replacement) and then holds the coins it paid; it is stored in the game record as coinsPaid so a reload can never pay twice.
 let wallet = createStarterWallet(), paidCoins = null, startTools = null;
@@ -101,13 +118,18 @@ function persistWallet() {
   return Promise.resolve(write).then((result) => Boolean(result?.ok && result.persisted), () => false);
 }
 function persistBest() {
-  if (!state || nextBest(best, state.score) === best) return;
-  best = nextBest(best, state.score);
-  // Another tab may have stored a higher record: re-read it and never lower it.
-  persistSafe(() => storage.load(STORAGE_KEYS.best).then((read) => {
+  if (!state) return;
+  const key = activeBestKey(), previous = bestByKey.get(key) ?? 0;
+  const candidate = nextBest(previous, state.score);
+  if (candidate === previous) return;
+  bestByKey.set(key, candidate); best = candidate;
+  // Capture the field key before the async read: starting another size must never route an old result into its record.
+  persistSafe(() => storage.load(key).then((read) => {
     const parsed = read.ok ? parseBest(read.value) : null;
-    if (parsed?.ok && parsed.score > best) best = parsed.score;
-    storage.save(STORAGE_KEYS.best, serializeBest(best));
+    const score = Math.max(candidate, bestByKey.get(key) ?? 0, parsed?.ok ? parsed.score : 0);
+    bestByKey.set(key, score);
+    if (activeBestKey() === key) best = score;
+    return storage.save(key, serializeBest(score));
   }).catch(() => {}));
 }
 function persistJournal() {
@@ -125,7 +147,7 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const keys = [STORAGE_KEYS[slot], RULES_V8_STORAGE_KEYS[slot], RULES_V7_STORAGE_KEYS[slot], RULES_V6_STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  const keys = [STORAGE_KEYS[slot], RULES_V9_STORAGE_KEYS[slot], RULES_V8_STORAGE_KEYS[slot], RULES_V7_STORAGE_KEYS[slot], RULES_V6_STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
   for (let index = 0; index < keys.length; index += 1) {
     const stored = await storage.load(keys[index]);
     if (stored.reason === 'missing') continue;
@@ -159,7 +181,7 @@ function updateCoins() {
 const hud = document.querySelector('.hud');
 let hudSignature = '';
 function fitHud(force = false) {
-  const signature = [$('score').textContent, $('turn').textContent, $('coins').textContent, $('best').textContent, hud.clientWidth].join('|');
+  const signature = [$('score').textContent, $('turn').textContent, $('coins').textContent, $('best').textContent, $('fieldBadge').textContent, hud.clientWidth].join('|');
   if (!force && signature === hudSignature) return;
   hudSignature = signature;
   for (let level = 0; level <= 3; level += 1) {
@@ -465,6 +487,7 @@ function render() {
   if (!previewTween) drawNextRowCanvas();
   $('score').textContent = displayedScore.toLocaleString('uk-UA'); $('turn').textContent = state.turn;
   $('best').textContent = `Рекорд ${Math.max(recordBase, displayedScore).toLocaleString('uk-UA')}`;
+  $('fieldBadge').textContent = `${state.cols} × ${state.rows}`;
   fitHud();
   $('newRecord').hidden = !(state.status === 'gameover' && isNewRecord(state.score, bestAtStart));
   $('gameOver').hidden = state.status !== 'gameover' || busy;
@@ -561,7 +584,8 @@ function installState(next, text, restored = false) {
 // already taken out is stored BEFORE the new game record, so a break can lose charges but never duplicate them.
 function startGame(taken) {
   const gameSeed = seed();
-  const next = createGame({ cols: 8, rows: 12, seed: gameSeed, trial: true, tools: taken.tools });
+  const next = createGame({ cols: pendingField.cols, rows: pendingField.rows, seed: gameSeed, trial: true, tools: taken.tools });
+  best = bestByKey.get(pendingField.bestKey) ?? 0;
   wallet = taken.wallet; persistWallet(); updateCoins();
   lastPicks = Object.fromEntries(taken.tools.map(({ kind, charges }) => [kind, charges]));
   startTools = taken.tools.map(({ kind, charges }) => ({ kind, charges }));
@@ -579,10 +603,14 @@ function startGame(taken) {
 }
 // Restores the stored best score, wallet, last game and journal; a damaged or foreign record never blocks a new game.
 async function initGame() {
-  const [bestRead, primaryWalletRead, gameRead, journalRead] = await Promise.all([
-    storage.load(STORAGE_KEYS.best), storage.load(WALLET_STORAGE_KEY), readSavedRecord('game'), readSavedRecord('journal'),
+  const [bestReads, primaryWalletRead, gameRead, journalRead] = await Promise.all([
+    Promise.all(FIELD_SIZES.map(({ bestKey }) => storage.load(bestKey))), storage.load(WALLET_STORAGE_KEY), readSavedRecord('game'), readSavedRecord('journal'),
   ]);
-  if (bestRead.ok) { const parsed = parseBest(bestRead.value); if (parsed.ok) best = parsed.score; }
+  bestReads.forEach((read, index) => {
+    const parsed = read.ok ? parseBest(read.value) : null;
+    bestByKey.set(FIELD_SIZES[index].bestKey, parsed?.ok ? parsed.score : 0);
+  });
+  best = bestByKey.get(DEFAULT_FIELD.bestKey);
   const walletRead = primaryWalletRead.reason === 'missing'
     ? await storage.load(LEGACY_WALLET_STORAGE_KEY)
     : primaryWalletRead;
@@ -608,9 +636,10 @@ async function initGame() {
     openLoadout({ notice: [notice, damaged ? 'Збережену партію не вдалося відновити.' : ''].filter(Boolean).join(' ') });
     return;
   }
-  const bestStored = best;
-  best = Math.max(best, record.state.score, record.bestAtStart);
-  if (best > bestStored) persistSafe(() => storage.save(STORAGE_KEYS.best, serializeBest(best)));
+  const recordKey = bestKeyForSize(record.state.cols, record.state.rows), bestStored = bestByKey.get(recordKey) ?? 0;
+  best = Math.max(bestStored, record.state.score, record.bestAtStart);
+  bestByKey.set(recordKey, best);
+  if (best > bestStored) persistSafe(() => storage.save(recordKey, serializeBest(best)));
   bestAtStart = record.bestAtStart; recordBase = Math.max(best, bestAtStart);
   const gameOver = record.state.status === 'gameover';
   const settledBefore = record.coinsPaid !== undefined; // already paid: a loss, or a game replaced through "Нова гра"
@@ -1126,6 +1155,8 @@ function openLoadout({ cancellable = false, undo = false, notice = '', info = ''
   cancelDrag();
   loadoutCancellable = cancellable && Boolean(state); loadoutUndo = loadoutCancellable && undo;
   picks = offeredPicks();
+  pendingField = fieldForSize(state?.cols, state?.rows) ?? DEFAULT_FIELD;
+  renderFieldChoice();
   loadoutNotice.replaceChildren();
   for (const [text, tone] of [[notice, 'bad'], [info, 'info']]) {
     if (!text) continue;
