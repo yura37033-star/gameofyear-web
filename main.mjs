@@ -1,11 +1,11 @@
-import { FIELD_SIZES, DEFAULT_FIELD, fieldById, fieldForSize, bestKeyForSize } from './core/fields.mjs?v=third-edd6382dd2';
-import { COLOR_DEBUT_SCORE, THIRD_COLOR, THIRD_COLOR_SCORE, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=third-edd6382dd2';
-import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=third-edd6382dd2';
-import { initOffline } from './offline.mjs?v=third-edd6382dd2';
-import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=third-edd6382dd2';
-import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=third-edd6382dd2';
-import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=third-edd6382dd2';
-import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS, RULES_V8_STORAGE_KEYS, RULES_V9_STORAGE_KEYS, RULES_V10_STORAGE_KEYS, RULES_V11_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=third-edd6382dd2';
+import { FIELD_SIZES, DEFAULT_FIELD, fieldById, fieldForSize, bestKeyForSize } from './core/fields.mjs?v=order-9de2c874c5';
+import { COLOR_DEBUT_SCORE, THIRD_COLOR_SCORE, trialColorRoles, TOOL_CELL_POINTS, RAINBOW_COLOR, areaToolBounds, arrowToolBounds, cannonToolBounds, createGame, movePieceAlongPath, previewRotation, rotatePiece, shouldPulseHint, suggestAction, toolTargetCells, useTool } from './core/game.mjs?v=order-9de2c874c5';
+import { buildPlayback, samplePieces, advanceDrag } from './motion.mjs?v=order-9de2c874c5';
+import { initOffline } from './offline.mjs?v=order-9de2c874c5';
+import { BUILD_ID, createJournal, exportJournal, finishGameLog, formatAll, formatReport, importJournal, latestGame, parseDevice, recordTool, recordTurn, startGameLog, summarizeGame } from './journal.mjs?v=order-9de2c874c5';
+import { isNewRecord, nextBest, parseBest, parseGame, serializeBest, serializeGame } from './core/persistence.mjs?v=order-9de2c874c5';
+import { MAX_CARRY, MAX_KINDS, PRICES, STOCK_LIMITS, TOOL_KINDS, buyCharge, coinsForScore, createStarterWallet, decodeWalletCode, encodeWalletCode, parseWallet, planLoadout, serializeWallet, settleGame, takeLoadout } from './economy.mjs?v=order-9de2c874c5';
+import { HAMMER_STORAGE_KEYS, RULES_V2_STORAGE_KEYS, RULES_V3_STORAGE_KEYS, RULES_V4_STORAGE_KEYS, RULES_V5_STORAGE_KEYS, RULES_V6_STORAGE_KEYS, RULES_V7_STORAGE_KEYS, RULES_V8_STORAGE_KEYS, RULES_V9_STORAGE_KEYS, RULES_V10_STORAGE_KEYS, RULES_V11_STORAGE_KEYS, RULES_V12_STORAGE_KEYS as STORAGE_KEYS, STORAGE_KEYS as LEGACY_STORAGE_KEYS, STORAGE_LIMITS, LEGACY_WALLET_STORAGE_KEY, WALLET_STORAGE_KEY, createStorage } from './storage.mjs?v=order-9de2c874c5';
 
 const $ = (id) => document.getElementById(id);
 const board = $('board'), nextCanvas = $('nextRow'), playArea = $('playArea'), frame = $('boardFrame');
@@ -148,7 +148,7 @@ function persistJournal() {
 function persistAll() { persistBest(); persistGame(); persistJournal(); }
 
 async function readSavedRecord(slot) {
-  const keys = [STORAGE_KEYS[slot], RULES_V10_STORAGE_KEYS[slot], RULES_V9_STORAGE_KEYS[slot], RULES_V8_STORAGE_KEYS[slot], RULES_V7_STORAGE_KEYS[slot], RULES_V6_STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
+  const keys = [STORAGE_KEYS[slot], RULES_V11_STORAGE_KEYS[slot], RULES_V10_STORAGE_KEYS[slot], RULES_V9_STORAGE_KEYS[slot], RULES_V8_STORAGE_KEYS[slot], RULES_V7_STORAGE_KEYS[slot], RULES_V6_STORAGE_KEYS[slot], RULES_V5_STORAGE_KEYS[slot], RULES_V4_STORAGE_KEYS[slot], RULES_V3_STORAGE_KEYS[slot], RULES_V2_STORAGE_KEYS[slot], HAMMER_STORAGE_KEYS[slot], LEGACY_STORAGE_KEYS[slot]];
   for (let index = 0; index < keys.length; index += 1) {
     const stored = await storage.load(keys[index]);
     if (stored.reason === 'missing') continue;
@@ -684,11 +684,12 @@ async function commit(result, initialScene = scene) {
   const hasDouble = result.events.some((event) => event.type === 'double');
   const doubled = hasDouble && (result.events.some((event) => event.type === 'rise' || event.type === 'refill') ? 'after-rise' : 'replace');
   // A colour debut pauses the shown row until the score count-up reaches the threshold: the second colour at COLOR_DEBUT_SCORE (any colour
-  // other than the opening one), the third colour (green) at THIRD_COLOR_SCORE.
+  // other than the opening one), the third role of this game at THIRD_COLOR_SCORE.
+  const { thirdColor } = trialColorRoles(state);
   const crossed = (limit) => oldScore < limit && state.score >= limit;
   const debutScore = state.status !== 'playing' ? null
     : crossed(COLOR_DEBUT_SCORE) && state.nextRow.some((segment) => segment.color !== state._trialColor && segment.color !== RAINBOW_COLOR) ? COLOR_DEBUT_SCORE
-      : crossed(THIRD_COLOR_SCORE) && state.nextRow.some((segment) => segment.color === THIRD_COLOR) ? THIRD_COLOR_SCORE
+      : crossed(THIRD_COLOR_SCORE) && state.nextRow.some((segment) => segment.color === thirdColor) ? THIRD_COLOR_SCORE
         : null;
   const hasDebutPreview = debutScore !== null;
   let didRise = false;

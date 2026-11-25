@@ -17,16 +17,17 @@
 // `_debut3RowsReserved`. Versions 1-10 migrate with their pieces, score, shown row, counters, tool charges and payout marker preserved
 // (a trial palette of the two default colours gets the third colour appended, the third debut counts as done from 5000 points); an old
 // hint is dropped only when it no longer replays.
-import { FIELD_SIZES, fieldForSize } from './fields.mjs?v=third-edd6382dd2';
+import { FIELD_SIZES, fieldForSize } from './fields.mjs?v=order-9de2c874c5';
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   THIRD_COLOR, THIRD_COLOR_DEBUT_ROWS, THIRD_COLOR_SCORE, TOOL_CELL_POINTS, hasThirdColor, makeToolSlots, movePieceAlongPath, previewMovePath,
   previewRotation, rotatePiece, validateToolSlots,
-} from './game.mjs?v=third-edd6382dd2';
+} from './game.mjs?v=order-9de2c874c5';
 
 export const SCHEMA_VERSION = 1;
 // Rules 10 adds approved field sizes and separate save keys; rules-9 gameplay is unchanged. Rules 11 adds the third colour (from 5000 points).
-export const RULES_VERSION = 11;
+// Rules 12 stores a new game's random colour roles; older games keep a null order and their exact continuation.
+export const RULES_VERSION = 12;
 // The two colours of every trial record before rules 11; the migration appends THIRD_COLOR to exactly this palette.
 const PALETTE_BEFORE_RULES_11 = Object.freeze(['#5D8FE8', '#F3C969']);
 // Before rules 9 the first rainbow strip needed 4000 points; a record of an older version must still satisfy that rule.
@@ -124,6 +125,7 @@ export function serializeGame(state, { bestAtStart = 0, savedAt = 0, coinsPaid }
   };
   if (state.trial === true) {
     out.tools = state.tools.map(({ kind, charges }) => ({ kind, charges }));
+    out._colorOrder = state._colorOrder == null ? null : [...state._colorOrder];
     out._debutRowsReserved = state._debutRowsReserved ?? 0;
     out._debut3RowsReserved = state._debut3RowsReserved ?? 0;
     out._droughtTurns = state._droughtTurns ?? 0;
@@ -414,7 +416,7 @@ function validateState(raw, version) {
     ['cols', 'rows', 'palette', 'pieces', 'nextRow', 'nextRowKind', 'score', 'turn', 'status', 'trial',
       'skipNextRise', 'skipRiseUsed', '_trialColor', '_rng', '_nextId',
       ...(trial ? ['_debutRowsReserved', '_droughtTurns', '_droughtRescueIssued', '_witness', ...(oldRules ? [] : ['tools']),
-        ...(version >= 11 ? ['_debut3RowsReserved'] : [])] : [])],
+        ...(version >= 11 ? ['_debut3RowsReserved'] : []), ...(version >= 12 ? ['_colorOrder'] : [])] : [])],
     trial ? ['_rowsPrepared', '_rainbowRows', '_rainbowFirstDone', ...(oldRules ? ['hammersRemaining'] : [])] : ['_witness']);
   const size = trial && version >= 10 ? fieldForSize(raw.cols, raw.rows) : (trial ? TRIAL_SIZE : CLASSIC_SIZE);
   need(size !== null && raw.cols === size.cols && raw.rows === size.rows, 'size');
@@ -429,6 +431,18 @@ function validateState(raw, version) {
     palette = [...palette, THIRD_COLOR];
   }
   const thirdActive = trial && hasThirdColor(palette);
+  // An older save has no random order: retaining null keeps its colours, RNG, shown row and future debuts unchanged.
+  let colorOrder = null;
+  if (trial && version >= 12) {
+    need(raw._colorOrder === null || (Array.isArray(raw._colorOrder) && raw._colorOrder.length === 3), 'color-order');
+    if (raw._colorOrder !== null) {
+      need(thirdActive && raw._colorOrder.every((color) => typeof color === 'string' && palette.includes(color))
+        && new Set(raw._colorOrder).size === 3, 'color-order');
+      need(raw._trialColor === raw._colorOrder[0], 'color-order-base');
+      colorOrder = [...raw._colorOrder];
+    }
+  }
+  const thirdColor = colorOrder?.[2] ?? (thirdActive ? palette[2] : null);
   need(raw.status === 'playing' || raw.status === 'gameover', 'status');
   need(typeof raw.skipNextRise === 'boolean' && typeof raw.skipRiseUsed === 'boolean', 'flags');
   need(raw.nextRowKind === 'regular' || raw.nextRowKind === 'rescue', 'next-row-kind');
@@ -436,12 +450,12 @@ function validateState(raw, version) {
   need(isInt(raw.turn), 'turn');
   need(isUint32(raw._rng), 'rng');
   need(isInt(raw._nextId, 1, MAX_NUMBER), 'next-id');
-  if (trial) need(typeof raw._trialColor === 'string' && palette.includes(raw._trialColor) && !(thirdActive && raw._trialColor === palette[2]), 'trial-color');
+  if (trial) need(typeof raw._trialColor === 'string' && palette.includes(raw._trialColor) && !(thirdActive && raw._trialColor === thirdColor), 'trial-color');
   else need(raw._trialColor === null, 'trial-color');
   const { pieces, maxId } = validatePieces(raw.pieces, cols, rows, palette, trial);
   need(raw._nextId > maxId, 'next-id-low');
   const nextRow = validateRow(raw.nextRow, cols, palette, trial);
-  const isThird = (item) => thirdActive && item.color === palette[2];
+  const isThird = (item) => thirdActive && item.color === thirdColor;
   need(!(raw.skipNextRise && raw.skipRiseUsed), 'skip-flags');
   need(!(raw.skipNextRise && raw.nextRowKind === 'rescue'), 'skip-rescue');
   need(trial || (!raw.skipNextRise && !raw.skipRiseUsed && raw.nextRowKind === 'regular'), 'classic-flags');
@@ -470,6 +484,7 @@ function validateState(raw, version) {
     need(isInt(raw._droughtTurns, 0, MAX_DROUGHT_TURNS), 'drought-turns');
     need(typeof raw._droughtRescueIssued === 'boolean', 'drought-issued');
     need(!raw._droughtRescueIssued || raw._droughtTurns === MAX_DROUGHT_TURNS, 'drought-issued-turns');
+    if (colorOrder) state._colorOrder = colorOrder;
     state._debutRowsReserved = raw._debutRowsReserved;
     state._debut3RowsReserved = debut3;
     state.tools = tools;
@@ -514,8 +529,8 @@ function validateState(raw, version) {
       // second-colour share and rainbow threshold (a continuation row generated at 3000+ points differs under rules 9).
       // Keep the game; a stale, structurally valid hint must not reject an older save.
       // Field profiles do not alter future turns, and rules 11 changes the rows only from THIRD_COLOR_SCORE on: below it a false hint of a
-      // rules-9 or rules-10 record is still rejected; from it on such a hint is dropped like an older one. A rules-11 record is always checked.
-      need(version < 9 || (version < RULES_VERSION && raw.score >= THIRD_COLOR_SCORE), 'witness-replay');
+      // rules-9 or rules-10 record is still rejected; from it on such a hint is dropped like an older one. Rules 11 and 12 records are always checked.
+      need(version < 9 || (version < 11 && raw.score >= THIRD_COLOR_SCORE), 'witness-replay');
       state._witness = null;
     }
   } else {

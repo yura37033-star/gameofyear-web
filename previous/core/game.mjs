@@ -1,6 +1,12 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=offline-e1b9594661';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=third-edd6382dd2';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
+// Rules 11 ("third colour"): a trial game created without an explicit palette plays with TRIAL_PALETTE. The third colour never serves
+// as the base (opening) colour, which is drawn from the first two palette colours only. Classic mode and every explicit palette keep
+// their rules: the third-colour rules apply only to a palette of exactly three colours whose third colour is THIRD_COLOR.
+export const THIRD_COLOR = '#5CCB7A';
+export const TRIAL_PALETTE = Object.freeze([...DEFAULT_PALETTE, THIRD_COLOR]);
+export const hasThirdColor = (palette) => Array.isArray(palette) && palette.length === 3 && palette[2] === THIRD_COLOR;
 export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
 // Tool slots of one game (DEMO_PLAN.md section 24): up to two different kinds in the fixed order below, at most
 // MAX_TOOL_CARRY charges in total. TOOL_CHARGES is the per-game ceiling for each kind (the wallet stock limits live in economy.mjs).
@@ -18,6 +24,12 @@ export const ARROW_HEIGHT = 2;
 export const AREA_SIZE = 3;
 export const COLOR_DEBUT_SCORE = 3000;
 const COLOR_DEBUT_ROWS = 2;
+// Rules 11: from THIRD_COLOR_SCORE on (and once the second-colour debut is complete) the next THIRD_COLOR_DEBUT_ROWS prepared rows are forced
+// single-colour rows of the third colour. After that an ordinary or rescue row (segment) is not the base colour with probability
+// NON_BASE_CHANCE_AFTER_THIRD, split equally between the second and the third colour. Below THIRD_COLOR_SCORE nothing changes.
+export const THIRD_COLOR_SCORE = 5000;
+export const THIRD_COLOR_DEBUT_ROWS = 2;
+const NON_BASE_CHANCE_AFTER_THIRD = 0.25;
 // Rules 9: after the debut (two forced second-colour rows at COLOR_DEBUT_SCORE) an ordinary or rescue row is second-colour in 15% of
 // cases (it was 35%); the curve below COLOR_DEBUT_SCORE (10% up to 1000, rising to 35% at 2000, held up to 2999) is unchanged.
 const SECOND_COLOR_CHANCE_AFTER_DEBUT = 0.15;
@@ -419,8 +431,9 @@ function fallbackStart(cols, rows, palette) {
   return pieces;
 }
 
-function secondColorChance(score, incomingTurn) {
+function secondColorChance(score, incomingTurn, thirdColor = false) {
   if (incomingTurn <= 4) return 0;
+  if (thirdColor && score >= THIRD_COLOR_SCORE) return NON_BASE_CHANCE_AFTER_THIRD;
   if (score >= COLOR_DEBUT_SCORE) return SECOND_COLOR_CHANCE_AFTER_DEBUT;
   if (score <= 1000) return 0.1;
   if (score >= 2000) return 0.35;
@@ -433,15 +446,24 @@ function easySelectionChance(score) {
   return (2000 - score) / 1000;
 }
 
+// The alternatives are the palette colours other than the base colour, the second colour first. The pick always consumes one draw. With
+// the third colour in the palette only the first alternative (the second colour) is possible below THIRD_COLOR_SCORE, and from there on
+// the draw splits the alternatives equally; a palette without it keeps the plain uniform pick.
+function pickAlternative(alternatives, random, score, palette) {
+  const roll = random();
+  if (hasThirdColor(palette) && score < THIRD_COLOR_SCORE) return alternatives[0];
+  return alternatives[Math.floor(roll * alternatives.length)];
+}
+
 function generateTrialRow(cols, palette, random, incomingTurn, score, baseColor, forcedColor = null) {
   const row = generateRow(cols, palette, random);
   if (forcedColor) return row.map((segment) => ({ ...segment, color: forcedColor }));
-  const chance = secondColorChance(score, incomingTurn);
+  const chance = secondColorChance(score, incomingTurn, hasThirdColor(palette));
   for (const segment of row) {
     segment.color = baseColor;
     if (chance && palette.length > 1 && random() < chance) {
       const alternatives = [...new Set(palette.filter((color) => color !== baseColor))];
-      if (alternatives.length) segment.color = alternatives[Math.floor(random() * alternatives.length)];
+      if (alternatives.length) segment.color = pickAlternative(alternatives, random, score, palette);
     }
   }
   if (score >= COLOR_DEBUT_SCORE && row.length) {
@@ -503,14 +525,18 @@ function chooseCompatibleGaps(state, row, seed) {
   return best;
 }
 
-function trialRowColorMode(state, debutCount = state._debutRowsReserved ?? 0) {
+function trialRowColorMode(state, debutCount = state._debutRowsReserved ?? 0, debut3Count = state._debut3RowsReserved ?? 0) {
   const baseColor = state._trialColor ?? state.palette[0];
   const secondColor = state.palette.find((color) => color !== baseColor) ?? state.palette[1];
   const forcedSecondColor = state.score >= COLOR_DEBUT_SCORE && debutCount < COLOR_DEBUT_ROWS ? secondColor : null;
+  // The third-colour debut starts only after the second-colour debut is complete.
+  const forcedThirdColor = hasThirdColor(state.palette) && state.score >= THIRD_COLOR_SCORE && debutCount >= COLOR_DEBUT_ROWS
+    && debut3Count < THIRD_COLOR_DEBUT_ROWS ? state.palette[2] : null;
   return {
     baseColor,
     forcedSecondColor,
-    forcedRowColor: forcedSecondColor ?? (state.score < COLOR_DEBUT_SCORE ? baseColor : null),
+    forcedThirdColor,
+    forcedRowColor: forcedSecondColor ?? forcedThirdColor ?? (state.score < COLOR_DEBUT_SCORE ? baseColor : null),
   };
 }
 
@@ -650,10 +676,10 @@ function buildRescueRow(cols, palette, gapMask, random, incomingTurn, score, bas
     const end = (() => { let next = x; while (next < cols && !gaps.has(next)) next += 1; return next; })();
     const length = Math.min(4, end - x);
     let color = forcedColor ?? baseColor;
-    const chance = secondColorChance(score, incomingTurn);
+    const chance = secondColorChance(score, incomingTurn, hasThirdColor(palette));
     if (!forcedColor && chance && palette.length > 1 && random() < chance) {
       const alternatives = [...new Set(palette.filter((candidate) => candidate !== baseColor))];
-      if (alternatives.length) color = alternatives[Math.floor(random() * alternatives.length)];
+      if (alternatives.length) color = pickAlternative(alternatives, random, score, palette);
     }
     segments.push({ x, length, color });
     x += length;
@@ -860,7 +886,8 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
       const random = createRandom(continuationState._rng);
       const rootSeed = random.state;
       const debutCount = continuationState._debutRowsReserved ?? 0;
-      const { baseColor, forcedSecondColor, forcedRowColor } = trialRowColorMode(continuationState, debutCount);
+      const debut3Count = continuationState._debut3RowsReserved ?? 0;
+      const { baseColor, forcedSecondColor, forcedThirdColor, forcedRowColor } = trialRowColorMode(continuationState, debutCount, debut3Count);
       continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, baseColor, forcedRowColor);
       if (continuationState.score >= COLOR_DEBUT_SCORE) {
         continuationRow = chooseCompatibleGaps(continuationState, continuationRow, random.state);
@@ -869,6 +896,7 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
       continuationRow = placeRainbow(continuationRow, planRainbow(continuationState, rootSeed));
       Object.assign(continuationState, rainbowCountersAfter(continuationState, continuationRow));
       if (forcedSecondColor) continuationState._debutRowsReserved = debutCount + 1;
+      if (forcedThirdColor) continuationState._debut3RowsReserved = debut3Count + 1;
       continuationState.nextRow = continuationRow;
       continuationState.nextRowKind = 'regular';
       continuationState._rng = continuationRng;
@@ -890,6 +918,7 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
           continuationKind,
           continuationMode,
           continuationDebutRowsReserved: continuationState._debutRowsReserved ?? 0,
+          continuationDebut3RowsReserved: continuationState._debut3RowsReserved ?? 0,
           continuationRowsPrepared: continuationState._rowsPrepared ?? 0,
           continuationRainbowRows: [...(continuationState._rainbowRows ?? [])],
           continuationRainbowFirstDone: continuationState._rainbowFirstDone === true,
@@ -922,7 +951,8 @@ function selectTrialPreview(state, random) {
   const incomingTurn = state.turn + 1;
   const rootSeed = random.state;
   const debutCount = state._debutRowsReserved ?? 0;
-  const { baseColor, forcedSecondColor, forcedRowColor } = trialRowColorMode(state, debutCount);
+  const debut3Count = state._debut3RowsReserved ?? 0;
+  const { baseColor, forcedSecondColor, forcedThirdColor, forcedRowColor } = trialRowColorMode(state, debutCount, debut3Count);
   let fallbackRow = generateTrialRow(state.cols, state.palette, random, incomingTurn, state.score, baseColor, forcedRowColor);
   if (state.score >= COLOR_DEBUT_SCORE) fallbackRow = chooseCompatibleGaps(state, fallbackRow, rootSeed);
   // The strip goes onto every ordinary candidate row before any witness search, so the search
@@ -937,6 +967,7 @@ function selectTrialPreview(state, random) {
   const finish = (row, kind, skipNextRise, witness, rngState, rescued = false) => ({
     row, kind, skipNextRise, witness, rngState,
     debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0),
+    debut3RowsReserved: debut3Count + (forcedThirdColor ? 1 : 0),
     droughtRescueIssued: (state._droughtRescueIssued ?? false) || (rescued && droughtDue),
     ...rainbowCountersAfter(state, row),
   });
@@ -957,7 +988,7 @@ function selectTrialPreview(state, random) {
       row = placeRainbow(row, rainbowPlan);
       candidateRng = candidateRandom.state;
     }
-    const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'regular', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0), ...rainbowCountersAfter(state, row) };
+    const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'regular', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0), _debut3RowsReserved: debut3Count + (forcedThirdColor ? 1 : 0), ...rainbowCountersAfter(state, row) };
     const witness = findTrialWitness(candidate, regularBudget, firstActionPool);
     if (witness) return finish(row, 'regular', false, witness, candidateRng);
     if (regularBudget.exhausted) break;
@@ -970,7 +1001,7 @@ function selectTrialPreview(state, random) {
       const candidateRandom = createRandom((rootSeed ^ Math.imul(index + 101, 0x85ebca6b)) >>> 0);
       const row = buildRescueRow(state.cols, state.palette, gaps, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor);
       const candidateRng = candidateRandom.state;
-      const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'rescue', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0), ...rainbowCountersAfter(state, row) };
+      const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'rescue', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0), _debut3RowsReserved: debut3Count + (forcedThirdColor ? 1 : 0), ...rainbowCountersAfter(state, row) };
       const witness = findTrialWitness(candidate, rescueBudget, firstActionPool);
       if (witness) return finish(row, 'rescue', false, witness, candidateRng, true);
       if (rescueBudget.exhausted) break;
@@ -1017,7 +1048,8 @@ export function validateToolSlots(tools) {
 
 // `tools` (trial only) is the loadout of the game: zero to two slots, see validateToolSlots. Without it the fixed A1 set
 // (hammer 3, arrow 1) is used, so existing callers and tests keep their games.
-export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_PALETTE, trial = false, tools } = {}) {
+// Without an explicit `palette` a trial game plays with TRIAL_PALETTE (three colours) and a classic game with DEFAULT_PALETTE (two).
+export function createGame({ cols = 10, rows = 20, seed = 1, trial = false, palette = trial === true ? TRIAL_PALETTE : DEFAULT_PALETTE, tools } = {}) {
   if (!Number.isInteger(cols) || cols < 4 || !Number.isInteger(rows) || rows < 4) {
     throw new RangeError('cols and rows must be integers of at least 4');
   }
@@ -1034,7 +1066,8 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
   const normalizedSeed = seed >>> 0;
   const random = createRandom(normalizedSeed);
   const trialEnabled = trial === true;
-  const trialColor = trialEnabled ? palette[Math.floor(random() * palette.length)] : null;
+  // The third colour is never the base colour: the draw covers the first two palette colours only (one draw, as before).
+  const trialColor = trialEnabled ? palette[Math.floor(random() * (hasThirdColor(palette) ? 2 : palette.length))] : null;
   const startPalette = trialEnabled ? [trialColor] : palette;
   let pieces = [];
   let idCounter = 1;
@@ -1067,6 +1100,7 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
     _trialColor: trialColor,
     ...(trialEnabled ? {
       _debutRowsReserved: 0,
+      _debut3RowsReserved: 0,
       _droughtTurns: 0,
       _droughtRescueIssued: false,
       _rowsPrepared: 0,
@@ -1086,6 +1120,7 @@ export function createGame({ cols = 10, rows = 20, seed = 1, palette = DEFAULT_P
   initialState.nextRowKind = selection.kind;
   initialState.skipNextRise = selection.skipNextRise;
   initialState._debutRowsReserved = selection.debutRowsReserved;
+  initialState._debut3RowsReserved = selection.debut3RowsReserved;
   initialState._droughtRescueIssued = selection.droughtRescueIssued;
   initialState._rowsPrepared = selection._rowsPrepared;
   initialState._rainbowRows = selection._rainbowRows;
@@ -1222,6 +1257,9 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
       if (state.trial && Number.isInteger(witness.continuationDebutRowsReserved)) {
         nextState._debutRowsReserved = witness.continuationDebutRowsReserved;
       }
+      if (state.trial && Number.isInteger(witness.continuationDebut3RowsReserved)) {
+        nextState._debut3RowsReserved = witness.continuationDebut3RowsReserved;
+      }
       if (state.trial) {
         if (Number.isInteger(witness.continuationRowsPrepared)) {
           nextState._rowsPrepared = witness.continuationRowsPrepared;
@@ -1242,6 +1280,7 @@ function finalizeMove(state, pieceId, preview, moveEvent, {
         nextState._witness = selection.witness;
         nextState._rng = selection.rngState;
         nextState._debutRowsReserved = selection.debutRowsReserved;
+        nextState._debut3RowsReserved = selection.debut3RowsReserved;
         nextState._droughtRescueIssued = selection.droughtRescueIssued;
         nextState._rowsPrepared = selection._rowsPrepared;
         nextState._rainbowRows = selection._rainbowRows;
@@ -1386,6 +1425,7 @@ export function useTool(state, kind, target) {
     nextState.nextRowKind = selection.kind;
     nextState.skipNextRise = selection.skipNextRise;
     nextState._debutRowsReserved = selection.debutRowsReserved;
+    nextState._debut3RowsReserved = selection.debut3RowsReserved;
     nextState._droughtRescueIssued = selection.droughtRescueIssued;
     nextState._rowsPrepared = selection._rowsPrepared;
     nextState._rainbowRows = selection._rainbowRows;

@@ -12,17 +12,23 @@
 // neighbouring columns, the area hammer a 3 x 3 square); rules 7 makes the arrow remove two neighbouring rows, which decides the
 // future turns of a stored game. The rules-version bump keeps older builds from loading a state they would continue differently.
 // Rules 8 doubles a floor layer even when it includes vertical strips. Rules 9 lowers the second-colour share after the debut
-// (3000 points) to 15% and lets the rainbow strip appear from 3000 points instead of 4000. Versions 1-8 migrate with their
-// pieces, score, shown row, counters, tool charges and payout marker preserved; an old hint is dropped only when it no longer replays.
-import { FIELD_SIZES, fieldForSize } from './fields.mjs?v=offline-e1b9594661';
+// (3000 points) to 15% and lets the rainbow strip appear from 3000 points instead of 4000. Rules 11 adds a third colour (green) from
+// 5000 points: two forced debut rows, then a 25% non-base share split between the second and the third colour, and a new counter
+// `_debut3RowsReserved`. Versions 1-10 migrate with their pieces, score, shown row, counters, tool charges and payout marker preserved
+// (a trial palette of the two default colours gets the third colour appended, the third debut counts as done from 5000 points); an old
+// hint is dropped only when it no longer replays.
+import { FIELD_SIZES, fieldForSize } from './fields.mjs?v=third-edd6382dd2';
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
-  TOOL_CELL_POINTS, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece, validateToolSlots,
-} from './game.mjs?v=offline-e1b9594661';
+  THIRD_COLOR, THIRD_COLOR_DEBUT_ROWS, THIRD_COLOR_SCORE, TOOL_CELL_POINTS, hasThirdColor, makeToolSlots, movePieceAlongPath, previewMovePath,
+  previewRotation, rotatePiece, validateToolSlots,
+} from './game.mjs?v=third-edd6382dd2';
 
 export const SCHEMA_VERSION = 1;
-// Rules 10 adds approved field sizes and separate save keys; rules-9 gameplay is unchanged.
-export const RULES_VERSION = 10;
+// Rules 10 adds approved field sizes and separate save keys; rules-9 gameplay is unchanged. Rules 11 adds the third colour (from 5000 points).
+export const RULES_VERSION = 11;
+// The two colours of every trial record before rules 11; the migration appends THIRD_COLOR to exactly this palette.
+const PALETTE_BEFORE_RULES_11 = Object.freeze(['#5D8FE8', '#F3C969']);
 // Before rules 9 the first rainbow strip needed 4000 points; a record of an older version must still satisfy that rule.
 const RAINBOW_SCORE_BEFORE_RULES_9 = 4000;
 const rainbowScoreFor = (version) => (version >= 9 ? RAINBOW_SCORE : RAINBOW_SCORE_BEFORE_RULES_9);
@@ -34,6 +40,7 @@ const MAX_PIECE_CELLS = 4;
 const MAX_NUMBER = 1_000_000_000;
 const MAX_PATH = 64;
 const MAX_DEBUT_ROWS = 2;
+const MAX_DEBUT3_ROWS = THIRD_COLOR_DEBUT_ROWS;
 const MAX_DROUGHT_TURNS = 6;
 const COLOR_DEBUT_SCORE = 3000;
 const ID_PATTERN = /^p[1-9]\d{0,8}$/;
@@ -83,6 +90,7 @@ function serializeWitness(witness) {
     continuationRng: witness.continuationRng,
     continuationKind: witness.continuationKind,
     continuationDebutRowsReserved: witness.continuationDebutRowsReserved,
+    continuationDebut3RowsReserved: witness.continuationDebut3RowsReserved,
     continuationRowsPrepared: witness.continuationRowsPrepared,
     continuationRainbowRows: [...witness.continuationRainbowRows],
     continuationRainbowFirstDone: witness.continuationRainbowFirstDone,
@@ -117,6 +125,7 @@ export function serializeGame(state, { bestAtStart = 0, savedAt = 0, coinsPaid }
   if (state.trial === true) {
     out.tools = state.tools.map(({ kind, charges }) => ({ kind, charges }));
     out._debutRowsReserved = state._debutRowsReserved ?? 0;
+    out._debut3RowsReserved = state._debut3RowsReserved ?? 0;
     out._droughtTurns = state._droughtTurns ?? 0;
     out._droughtRescueIssued = state._droughtRescueIssued === true;
     out._rowsPrepared = state._rowsPrepared ?? 0;
@@ -277,13 +286,17 @@ function validateWitness(witness, context) {
     onlyKeys(witness, ['steps', 'first']);
     return { first: validateSignature(witness.first, context), steps: 1 };
   }
+  // Rules 11 adds the third-colour debut counter; a witness of an older record has none and continues from the state's own.
+  const hasDebut3 = context.version >= 11;
   onlyKeys(witness, ['steps', 'first', 'second', 'continuationMode', 'continuationRow', 'continuationRng',
-    'continuationKind', 'continuationDebutRowsReserved'],
+    'continuationKind', 'continuationDebutRowsReserved', ...(hasDebut3 ? ['continuationDebut3RowsReserved'] : [])],
   ['continuationRowsPrepared', 'continuationRainbowRows', 'continuationRainbowFirstDone']);
   need(witness.continuationMode === 'reserved' || witness.continuationMode === 'generated', 'witness-mode');
   need(witness.continuationKind === 'regular' || witness.continuationKind === 'rescue', 'witness-kind');
   need(isUint32(witness.continuationRng), 'witness-rng');
   need(isInt(witness.continuationDebutRowsReserved, 0, MAX_DEBUT_ROWS), 'witness-debut');
+  const debut3 = hasDebut3 ? witness.continuationDebut3RowsReserved : context.debut3;
+  need(isInt(debut3, 0, MAX_DEBUT3_ROWS), 'witness-debut3');
   // The three rainbow counters are optional on read: a witness saved before the strip existed continues
   // from the state's own counters (one more prepared row when the continuation row is newly generated).
   const hasCounters = ['continuationRowsPrepared', 'continuationRainbowRows', 'continuationRainbowFirstDone']
@@ -309,6 +322,7 @@ function validateWitness(witness, context) {
     continuationKind: witness.continuationKind,
     continuationMode: witness.continuationMode,
     continuationDebutRowsReserved: witness.continuationDebutRowsReserved,
+    continuationDebut3RowsReserved: debut3,
     continuationRowsPrepared: counters.rowsPrepared,
     continuationRainbowRows: counters.rainbowRows,
     continuationRainbowFirstDone: counters.firstDone,
@@ -364,6 +378,7 @@ function witnessReplays(state) {
   if (JSON.stringify(next.nextRow) !== JSON.stringify(witness.continuationRow)
     || next.nextRowKind !== witness.continuationKind || next._rng !== witness.continuationRng
     || next._debutRowsReserved !== witness.continuationDebutRowsReserved
+    || (next._debut3RowsReserved ?? 0) !== witness.continuationDebut3RowsReserved
     || next._rowsPrepared !== witness.continuationRowsPrepared
     || JSON.stringify(next._rainbowRows) !== JSON.stringify(witness.continuationRainbowRows)
     || next._rainbowFirstDone !== witness.continuationRainbowFirstDone) return false;
@@ -398,7 +413,8 @@ function validateState(raw, version) {
   onlyKeys(raw,
     ['cols', 'rows', 'palette', 'pieces', 'nextRow', 'nextRowKind', 'score', 'turn', 'status', 'trial',
       'skipNextRise', 'skipRiseUsed', '_trialColor', '_rng', '_nextId',
-      ...(trial ? ['_debutRowsReserved', '_droughtTurns', '_droughtRescueIssued', '_witness', ...(oldRules ? [] : ['tools'])] : [])],
+      ...(trial ? ['_debutRowsReserved', '_droughtTurns', '_droughtRescueIssued', '_witness', ...(oldRules ? [] : ['tools']),
+        ...(version >= 11 ? ['_debut3RowsReserved'] : [])] : [])],
     trial ? ['_rowsPrepared', '_rainbowRows', '_rainbowFirstDone', ...(oldRules ? ['hammersRemaining'] : [])] : ['_witness']);
   const size = trial && version >= 10 ? fieldForSize(raw.cols, raw.rows) : (trial ? TRIAL_SIZE : CLASSIC_SIZE);
   need(size !== null && raw.cols === size.cols && raw.rows === size.rows, 'size');
@@ -406,7 +422,13 @@ function validateState(raw, version) {
   need(Array.isArray(raw.palette) && raw.palette.length >= 2 && raw.palette.length <= 4, 'palette');
   need(raw.palette.every((color) => typeof color === 'string' && COLOR_PATTERN.test(color)), 'palette-color');
   need(new Set(raw.palette).size === raw.palette.length, 'palette-duplicate');
-  const palette = [...raw.palette];
+  let palette = [...raw.palette];
+  // Migration (version <= 10): a trial record with exactly the two default colours gets the third colour appended; its pieces and
+  // rows keep their colours, so the board is never altered.
+  if (trial && version < 11 && palette.length === PALETTE_BEFORE_RULES_11.length && palette.every((color, index) => color === PALETTE_BEFORE_RULES_11[index])) {
+    palette = [...palette, THIRD_COLOR];
+  }
+  const thirdActive = trial && hasThirdColor(palette);
   need(raw.status === 'playing' || raw.status === 'gameover', 'status');
   need(typeof raw.skipNextRise === 'boolean' && typeof raw.skipRiseUsed === 'boolean', 'flags');
   need(raw.nextRowKind === 'regular' || raw.nextRowKind === 'rescue', 'next-row-kind');
@@ -414,11 +436,12 @@ function validateState(raw, version) {
   need(isInt(raw.turn), 'turn');
   need(isUint32(raw._rng), 'rng');
   need(isInt(raw._nextId, 1, MAX_NUMBER), 'next-id');
-  if (trial) need(typeof raw._trialColor === 'string' && palette.includes(raw._trialColor), 'trial-color');
+  if (trial) need(typeof raw._trialColor === 'string' && palette.includes(raw._trialColor) && !(thirdActive && raw._trialColor === palette[2]), 'trial-color');
   else need(raw._trialColor === null, 'trial-color');
   const { pieces, maxId } = validatePieces(raw.pieces, cols, rows, palette, trial);
   need(raw._nextId > maxId, 'next-id-low');
   const nextRow = validateRow(raw.nextRow, cols, palette, trial);
+  const isThird = (item) => thirdActive && item.color === palette[2];
   need(!(raw.skipNextRise && raw.skipRiseUsed), 'skip-flags');
   need(!(raw.skipNextRise && raw.nextRowKind === 'rescue'), 'skip-rescue');
   need(trial || (!raw.skipNextRise && !raw.skipRiseUsed && raw.nextRowKind === 'regular'), 'classic-flags');
@@ -442,10 +465,13 @@ function validateState(raw, version) {
     }
     need(isInt(raw._debutRowsReserved, 0, MAX_DEBUT_ROWS), 'debut-rows');
     need(raw._debutRowsReserved === 0 || raw.score >= COLOR_DEBUT_SCORE, 'debut-score');
+    // The third debut counts as done for an older record that is already past THIRD_COLOR_SCORE: no forced rows appear mid-game.
+    const debut3 = version >= 11 ? raw._debut3RowsReserved : (thirdActive && raw.score >= THIRD_COLOR_SCORE ? THIRD_COLOR_DEBUT_ROWS : 0);
     need(isInt(raw._droughtTurns, 0, MAX_DROUGHT_TURNS), 'drought-turns');
     need(typeof raw._droughtRescueIssued === 'boolean', 'drought-issued');
     need(!raw._droughtRescueIssued || raw._droughtTurns === MAX_DROUGHT_TURNS, 'drought-issued-turns');
     state._debutRowsReserved = raw._debutRowsReserved;
+    state._debut3RowsReserved = debut3;
     state.tools = tools;
     state._droughtTurns = raw._droughtTurns;
     state._droughtRescueIssued = raw._droughtRescueIssued;
@@ -464,24 +490,32 @@ function validateState(raw, version) {
     state._rowsPrepared = counters.rowsPrepared;
     state._rainbowRows = counters.rainbowRows;
     state._rainbowFirstDone = counters.firstDone;
+    need(isInt(debut3, 0, MAX_DEBUT3_ROWS), 'debut3-rows');
+    need(debut3 === 0 || (thirdActive && raw.score >= THIRD_COLOR_SCORE), 'debut3-score');
   }
+  // The third colour appears only from THIRD_COLOR_SCORE on (the score never decreases), so earlier it cannot be on the board or in the row.
+  need(!thirdActive || raw.score >= THIRD_COLOR_SCORE || !(pieces.some(isThird) || nextRow.some(isThird)), 'third-color-score');
   state._rng = raw._rng;
   state._nextId = raw._nextId;
   if (trial) {
     state._witness = validateWitness(raw._witness, {
-      cols, rows, palette, idLimit: raw._nextId,
+      cols, rows, palette, idLimit: raw._nextId, version, debut3: state._debut3RowsReserved,
       counters: { rowsPrepared: state._rowsPrepared, rainbowRows: state._rainbowRows, firstDone: state._rainbowFirstDone },
     });
     if (state._witness?.steps === 2) {
       need(state._witness.continuationDebutRowsReserved === 0 || raw.score >= COLOR_DEBUT_SCORE, 'witness-debut-score');
+      need(state._witness.continuationDebut3RowsReserved === 0 || (thirdActive && raw.score >= THIRD_COLOR_SCORE), 'witness-debut3-score');
+      need(state._witness.continuationDebut3RowsReserved >= state._debut3RowsReserved, 'witness-debut3');
+      need(!thirdActive || raw.score >= THIRD_COLOR_SCORE || !state._witness.continuationRow.some(isThird), 'third-color-score');
       checkWitnessRainbow(state, state._witness, version);
     }
     if (state.status === 'playing' && !witnessReplays(state)) {
       // Older rules can plan a rise where rules 8 now doubles a floor layer, and rules 8 hints were searched with the old
       // second-colour share and rainbow threshold (a continuation row generated at 3000+ points differs under rules 9).
       // Keep the game; a stale, structurally valid hint must not reject an older save.
-      // Field profiles do not alter future turns. A false rules-9 hint is still rejected.
-      need(version < 9, 'witness-replay');
+      // Field profiles do not alter future turns, and rules 11 changes the rows only from THIRD_COLOR_SCORE on: below it a false hint of a
+      // rules-9 or rules-10 record is still rejected; from it on such a hint is dropped like an older one. A rules-11 record is always checked.
+      need(version < 9 || (version < RULES_VERSION && raw.score >= THIRD_COLOR_SCORE), 'witness-replay');
       state._witness = null;
     }
   } else {

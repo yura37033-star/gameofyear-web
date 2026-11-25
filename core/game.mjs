@@ -1,12 +1,30 @@
-import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=third-edd6382dd2';
+import { createRandom, generateRow, generateStartPieces } from './generator.mjs?v=order-9de2c874c5';
 
 const DEFAULT_PALETTE = ['#5D8FE8', '#F3C969'];
-// Rules 11 ("third colour"): a trial game created without an explicit palette plays with TRIAL_PALETTE. The third colour never serves
-// as the base (opening) colour, which is drawn from the first two palette colours only. Classic mode and every explicit palette keep
-// their rules: the third-colour rules apply only to a palette of exactly three colours whose third colour is THIRD_COLOR.
+// TRIAL_PALETTE keeps the canonical colour set for compatibility. Rules 12 gives a new default trial game its own seeded
+// _colorOrder (opening, second at 3000, third at 5000). A null order preserves the rules-11 interpretation exactly:
+// the base is _trialColor, the other of the first two colours is second, and palette[2] is third.
+// Classic mode, explicit palettes and migrated games are never shuffled.
 export const THIRD_COLOR = '#5CCB7A';
 export const TRIAL_PALETTE = Object.freeze([...DEFAULT_PALETTE, THIRD_COLOR]);
 export const hasThirdColor = (palette) => Array.isArray(palette) && palette.length === 3 && palette[2] === THIRD_COLOR;
+
+export function trialColorRoles(state) {
+  const baseColor = state._trialColor ?? state.palette[0];
+  return {
+    baseColor,
+    secondColor: state._colorOrder?.[1] ?? state.palette.find((color) => color !== baseColor) ?? state.palette[1],
+    thirdColor: state._colorOrder?.[2] ?? (hasThirdColor(state.palette) ? state.palette[2] : null),
+  };
+}
+
+// One existing opening RNG draw picks one of six equal-width intervals; no extra draw changes the shape stream.
+function seededColorOrder(palette, roll) {
+  const rank = Math.floor(roll * 6);
+  const first = palette[Math.floor(rank / 2)];
+  const rest = palette.filter((color) => color !== first);
+  return [first, rest[rank % 2], rest[1 - rank % 2]];
+}
 export const HAMMER_CHARGES = 3; // hammer charges of the fixed A1 set (trial default and the migration of older records)
 // Tool slots of one game (DEMO_PLAN.md section 24): up to two different kinds in the fixed order below, at most
 // MAX_TOOL_CARRY charges in total. TOOL_CHARGES is the per-game ceiling for each kind (the wallet stock limits live in economy.mjs).
@@ -455,14 +473,14 @@ function pickAlternative(alternatives, random, score, palette) {
   return alternatives[Math.floor(roll * alternatives.length)];
 }
 
-function generateTrialRow(cols, palette, random, incomingTurn, score, baseColor, forcedColor = null) {
+function generateTrialRow(cols, palette, random, incomingTurn, score, baseColor, forcedColor = null, colorOrder = null) {
   const row = generateRow(cols, palette, random);
   if (forcedColor) return row.map((segment) => ({ ...segment, color: forcedColor }));
   const chance = secondColorChance(score, incomingTurn, hasThirdColor(palette));
   for (const segment of row) {
     segment.color = baseColor;
     if (chance && palette.length > 1 && random() < chance) {
-      const alternatives = [...new Set(palette.filter((color) => color !== baseColor))];
+      const alternatives = colorOrder ? colorOrder.slice(1) : [...new Set(palette.filter((color) => color !== baseColor))];
       if (alternatives.length) segment.color = pickAlternative(alternatives, random, score, palette);
     }
   }
@@ -526,12 +544,11 @@ function chooseCompatibleGaps(state, row, seed) {
 }
 
 function trialRowColorMode(state, debutCount = state._debutRowsReserved ?? 0, debut3Count = state._debut3RowsReserved ?? 0) {
-  const baseColor = state._trialColor ?? state.palette[0];
-  const secondColor = state.palette.find((color) => color !== baseColor) ?? state.palette[1];
+  const { baseColor, secondColor, thirdColor } = trialColorRoles(state);
   const forcedSecondColor = state.score >= COLOR_DEBUT_SCORE && debutCount < COLOR_DEBUT_ROWS ? secondColor : null;
   // The third-colour debut starts only after the second-colour debut is complete.
-  const forcedThirdColor = hasThirdColor(state.palette) && state.score >= THIRD_COLOR_SCORE && debutCount >= COLOR_DEBUT_ROWS
-    && debut3Count < THIRD_COLOR_DEBUT_ROWS ? state.palette[2] : null;
+  const forcedThirdColor = thirdColor && state.score >= THIRD_COLOR_SCORE && debutCount >= COLOR_DEBUT_ROWS
+    && debut3Count < THIRD_COLOR_DEBUT_ROWS ? thirdColor : null;
   return {
     baseColor,
     forcedSecondColor,
@@ -668,7 +685,7 @@ function nextWitnessStep(witness, matchesFirst) {
   return { first: witness.second, steps: 1 };
 }
 
-function buildRescueRow(cols, palette, gapMask, random, incomingTurn, score, baseColor, forcedColor = null) {
+function buildRescueRow(cols, palette, gapMask, random, incomingTurn, score, baseColor, forcedColor = null, colorOrder = null) {
   const gaps = new Set(gapMask);
   const segments = [];
   for (let x = 0; x < cols;) {
@@ -678,7 +695,7 @@ function buildRescueRow(cols, palette, gapMask, random, incomingTurn, score, bas
     let color = forcedColor ?? baseColor;
     const chance = secondColorChance(score, incomingTurn, hasThirdColor(palette));
     if (!forcedColor && chance && palette.length > 1 && random() < chance) {
-      const alternatives = [...new Set(palette.filter((candidate) => candidate !== baseColor))];
+      const alternatives = colorOrder ? colorOrder.slice(1) : [...new Set(palette.filter((candidate) => candidate !== baseColor))];
       if (alternatives.length) color = pickAlternative(alternatives, random, score, palette);
     }
     segments.push({ x, length, color });
@@ -888,7 +905,7 @@ function findTrialWitness(state, budget, firstActions, { deduplicateFirstStates 
       const debutCount = continuationState._debutRowsReserved ?? 0;
       const debut3Count = continuationState._debut3RowsReserved ?? 0;
       const { baseColor, forcedSecondColor, forcedThirdColor, forcedRowColor } = trialRowColorMode(continuationState, debutCount, debut3Count);
-      continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, baseColor, forcedRowColor);
+      continuationRow = generateTrialRow(continuationState.cols, continuationState.palette, random, continuationState.turn + 1, continuationState.score, baseColor, forcedRowColor, continuationState._colorOrder);
       if (continuationState.score >= COLOR_DEBUT_SCORE) {
         continuationRow = chooseCompatibleGaps(continuationState, continuationRow, random.state);
       }
@@ -953,7 +970,7 @@ function selectTrialPreview(state, random) {
   const debutCount = state._debutRowsReserved ?? 0;
   const debut3Count = state._debut3RowsReserved ?? 0;
   const { baseColor, forcedSecondColor, forcedThirdColor, forcedRowColor } = trialRowColorMode(state, debutCount, debut3Count);
-  let fallbackRow = generateTrialRow(state.cols, state.palette, random, incomingTurn, state.score, baseColor, forcedRowColor);
+  let fallbackRow = generateTrialRow(state.cols, state.palette, random, incomingTurn, state.score, baseColor, forcedRowColor, state._colorOrder);
   if (state.score >= COLOR_DEBUT_SCORE) fallbackRow = chooseCompatibleGaps(state, fallbackRow, rootSeed);
   // The strip goes onto every ordinary candidate row before any witness search, so the search
   // and the shown row share one composition. A candidate without a suitable segment stays plain.
@@ -983,7 +1000,7 @@ function selectTrialPreview(state, random) {
     let candidateRng = fallbackRng;
     if (attempt > 0) {
       const candidateRandom = createRandom((rootSeed ^ Math.imul(attempt + 3, 0x9e3779b1)) >>> 0);
-      row = generateTrialRow(state.cols, state.palette, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor);
+      row = generateTrialRow(state.cols, state.palette, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor, state._colorOrder);
       if (state.score >= COLOR_DEBUT_SCORE) row = chooseCompatibleGaps(state, row, candidateRandom.state);
       row = placeRainbow(row, rainbowPlan);
       candidateRng = candidateRandom.state;
@@ -999,7 +1016,7 @@ function selectTrialPreview(state, random) {
     const rescueBudget = makeTrialSearchBudget(240, 3000, 5500);
     for (const [index, { gaps }] of masks.slice(0, 24).entries()) {
       const candidateRandom = createRandom((rootSeed ^ Math.imul(index + 101, 0x85ebca6b)) >>> 0);
-      const row = buildRescueRow(state.cols, state.palette, gaps, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor);
+      const row = buildRescueRow(state.cols, state.palette, gaps, candidateRandom, incomingTurn, state.score, baseColor, forcedRowColor, state._colorOrder);
       const candidateRng = candidateRandom.state;
       const candidate = { ...state, nextRow: copyRow(row), nextRowKind: 'rescue', skipNextRise: false, _witness: null, _rng: candidateRng, _debutRowsReserved: debutCount + (forcedSecondColor ? 1 : 0), _debut3RowsReserved: debut3Count + (forcedThirdColor ? 1 : 0), ...rainbowCountersAfter(state, row) };
       const witness = findTrialWitness(candidate, rescueBudget, firstActionPool);
@@ -1048,8 +1065,10 @@ export function validateToolSlots(tools) {
 
 // `tools` (trial only) is the loadout of the game: zero to two slots, see validateToolSlots. Without it the fixed A1 set
 // (hammer 3, arrow 1) is used, so existing callers and tests keep their games.
-// Without an explicit `palette` a trial game plays with TRIAL_PALETTE (three colours) and a classic game with DEFAULT_PALETTE (two).
-export function createGame({ cols = 10, rows = 20, seed = 1, trial = false, palette = trial === true ? TRIAL_PALETTE : DEFAULT_PALETTE, tools } = {}) {
+// Only a new default trial game draws a colour order. Explicit palettes and classic mode retain their historical behaviour.
+export function createGame({ cols = 10, rows = 20, seed = 1, trial = false, palette, tools } = {}) {
+  const randomOrder = trial === true && palette === undefined;
+  if (palette === undefined) palette = trial === true ? TRIAL_PALETTE : DEFAULT_PALETTE;
   if (!Number.isInteger(cols) || cols < 4 || !Number.isInteger(rows) || rows < 4) {
     throw new RangeError('cols and rows must be integers of at least 4');
   }
@@ -1066,8 +1085,9 @@ export function createGame({ cols = 10, rows = 20, seed = 1, trial = false, pale
   const normalizedSeed = seed >>> 0;
   const random = createRandom(normalizedSeed);
   const trialEnabled = trial === true;
-  // The third colour is never the base colour: the draw covers the first two palette colours only (one draw, as before).
-  const trialColor = trialEnabled ? palette[Math.floor(random() * (hasThirdColor(palette) ? 2 : palette.length))] : null;
+  const openingRoll = trialEnabled ? random() : null;
+  const colorOrder = randomOrder ? seededColorOrder(palette, openingRoll) : null;
+  const trialColor = trialEnabled ? colorOrder?.[0] ?? palette[Math.floor(openingRoll * (hasThirdColor(palette) ? 2 : palette.length))] : null;
   const startPalette = trialEnabled ? [trialColor] : palette;
   let pieces = [];
   let idCounter = 1;
@@ -1099,6 +1119,7 @@ export function createGame({ cols = 10, rows = 20, seed = 1, trial = false, pale
     nextRowKind: 'regular',
     _trialColor: trialColor,
     ...(trialEnabled ? {
+      ...(colorOrder ? { _colorOrder: colorOrder } : {}),
       _debutRowsReserved: 0,
       _debut3RowsReserved: 0,
       _droughtTurns: 0,

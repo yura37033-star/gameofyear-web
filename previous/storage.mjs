@@ -30,6 +30,9 @@ export const RULES_V9_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.
 // Fields (rules 10): one active game across the presets; only personal records are per field.
 // Keep every previous game/journal key intact for rollback. The small-field best keeps kr.best.
 export const RULES_V10_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.fields.v10', journal: 'kr.journal.fields.v10' });
+// Third colour (rules 11): green from 5000 points. Rules-10 saves migrate (the palette gets the third colour, the third debut counts as done);
+// the published rules-10 page keeps reading its own keys. Read v11 first, then v10 and all older keys; never delete them.
+export const RULES_V11_STORAGE_KEYS = Object.freeze({ best: 'kr.best', game: 'kr.game.third.v11', journal: 'kr.journal.third.v11' });
 export const LEGACY_WALLET_STORAGE_KEY = 'kr.wallet.v1';
 export const WALLET_STORAGE_KEY = 'kr.wallet.v2';
 export const STORAGE_LIMITS = Object.freeze({
@@ -60,6 +63,8 @@ export const STORAGE_LIMITS = Object.freeze({
   'kr.journal.balance.v9': 600 * 1024,
   'kr.game.fields.v10': 64 * 1024,
   'kr.journal.fields.v10': 600 * 1024,
+  'kr.game.third.v11': 64 * 1024,
+  'kr.journal.third.v11': 600 * 1024,
 });
 const PROBE_KEY = 'kr.probe';
 const DEFAULT_LIMIT = 64 * 1024;
