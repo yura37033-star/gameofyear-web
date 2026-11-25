@@ -1,4 +1,4 @@
-import { previewMovePath } from './core/game.mjs?v=fields-fd5f91727c';
+import { previewMovePath } from './core/game.mjs?v=offline-e1b9594661';
 
 const copyPieces = (pieces) => pieces.map((piece) => ({ ...piece, frame: { ...piece.frame }, cells: piece.cells.map((cell) => ({ ...cell })) }));
 const clamp = (value) => Math.max(0, Math.min(1, value));

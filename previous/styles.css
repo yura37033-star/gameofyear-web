@@ -236,3 +236,4 @@ dialog{width:min(370px,calc(100vw - 28px));padding:25px;border-radius:22px;borde
 .field-choice select{display:block;width:100%;min-height:44px;padding:9px 12px;font:inherit;font-size:16px;color:var(--ink);background:#14233b;border:1px solid #7896bc55;border-radius:8px;touch-action:manipulation}
 .field-choice select:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
 .field-choice p{margin:6px 0 0!important;font-size:11px!important;line-height:1.4!important;color:#9eb1cf!important}
+.offline-status{margin:8px 0 0;font-size:10px;line-height:14px;color:#81e5cc;text-align:center}

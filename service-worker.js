@@ -1,7 +1,7 @@
 'use strict';
 // Offline cache for the game (classic worker script, no imports).
 // The build id below is replaced by qa/release-verification/stamp-build.mjs; an unstamped dev copy keeps 'dev'.
-const BUILD_ID = 'offline-e1b9594661';
+const BUILD_ID = 'third-edd6382dd2';
 const CACHE_PREFIX = 'kr-offline';
 
 // Single source of the runtime file set: the whole package (tools/package-demo.mjs) plus the scope root './'.

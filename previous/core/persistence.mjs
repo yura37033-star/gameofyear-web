@@ -14,11 +14,11 @@
 // Rules 8 doubles a floor layer even when it includes vertical strips. Rules 9 lowers the second-colour share after the debut
 // (3000 points) to 15% and lets the rainbow strip appear from 3000 points instead of 4000. Versions 1-8 migrate with their
 // pieces, score, shown row, counters, tool charges and payout marker preserved; an old hint is dropped only when it no longer replays.
-import { FIELD_SIZES, fieldForSize } from './fields.mjs?v=fields-fd5f91727c';
+import { FIELD_SIZES, fieldForSize } from './fields.mjs?v=offline-e1b9594661';
 import {
   HAMMER_CHARGES, RAINBOW_COLOR, RAINBOW_MAX_IN_WINDOW, RAINBOW_MAX_LENGTH, RAINBOW_MIN_BETWEEN, RAINBOW_MIN_LENGTH, RAINBOW_SCORE,
   TOOL_CELL_POINTS, makeToolSlots, movePieceAlongPath, previewMovePath, previewRotation, rotatePiece, validateToolSlots,
-} from './game.mjs?v=fields-fd5f91727c';
+} from './game.mjs?v=offline-e1b9594661';
 
 export const SCHEMA_VERSION = 1;
 // Rules 10 adds approved field sizes and separate save keys; rules-9 gameplay is unchanged.
